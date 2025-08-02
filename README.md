@@ -1,4 +1,8 @@
 # go-bme
+[![LICENSE](https://img.shields.io/badge/license-BSD-green.svg)](LICENSE)
+[![GoReportCard](https://goreportcard.com/badge/cloudkucooland/go-bme)](https://goreportcard.com/report/cloudkucooland/go-bme)
+[![GoDoc](https://godoc.org/github.com/cloudkucooland/go-bme?status.svg)](https://godoc.org/github.com/cloudkucooland/go-bme)
+
 Tool to rip CDs and encode to ALAC in bulk
 
 I've written this three times over the past 20 years. First in sh, then in python2, now in Go. First it did mp3, then flac, now ALAC. It's been 14 years since the last time I ripped a mess of CDs in bulk and yet I keep buying them... so it's time to rip more. The old Python2 tool had rotted to the point of being more work to update than it was worth. So, time to rewrite it.
