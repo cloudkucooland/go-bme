@@ -1,0 +1,190 @@
+#!/bin/sh
+# Scot C. Bontrager http://www.indievisible.org/
+# scot <at> indievisible.org
+# This file is in the public domain - May 15 2011
+# added BMEHELPER
+#
+
+MV="mv"
+RM="rm"
+RMDIR="rmdir"
+WORKROOT="/home/scot/bme-working"
+LOGROOT="/home/data/bme-working/log"
+FLACROOT="/home/data/bme-working/incoming"
+FLACOPTS="--replay-gain --silent -f --best"
+PARAOPTS="" # "-q"
+BMEHELPER="/home/data/src/bme-helper"
+
+/usr/bin/cdda-player -C -d /dev/cdrom
+eval `/home/data/src/bme-helper`
+
+if [ -z $MUSICBRAINZ_DISCID ]; then
+    echo "unable to get MUSICBRAINZ_DISCID"
+    /usr/bin/cdda-player -e -d /dev/cdrom
+    exit
+fi
+
+WORKDIR=$WORKROOT/$MUSICBRAINZ_DISCID
+
+if [ ! -d $WORKDIR ]; then
+    echo "creating $WORKDIR and starting"
+    mkdir -p $WORKDIR || exit
+else
+    echo "$WORKDIR exists; resuming"
+fi
+
+if [ -x $BMEHELPER ]; then
+    $BMEHELPER | sed s/\`//g >> $WORKDIR/discID
+    eval `cat $WORKDIR/discID | grep local` # only eval lines that give local variables
+fi
+
+releaseID=`/usr/local/bin/curl -s -o - "http://musicbrainz.org/ws/2/discid/$MUSICBRAINZ_DISCID" | cut -d \" -f 12`
+echo "$TOC:$MUSICBRAINZ_DISCID:$releaseID" >> $WORKDIR/log
+
+echo "getting CDDB data from musicbrainz"
+$CDIO discID -d freedb.musicbrainz.org:80 | \
+    grep -v -- '-----------------' > $WORKDIR/discID
+
+if [ ! -s $WORKDIR/discID ]; then
+    echo "trying freedb.org"
+    $CDIO discID 1 | grep -v -- '-----------------' > $WORKDIR/discID
+fi
+
+if [ "$releaseID" ]; then
+    echo "musicbrainz release ID: $releaseID"
+    echo "$releaseID" >> $WORKDIR/discID
+fi
+
+if [ -x /usr/local/bin/cd-info ]; then
+    /usr/local/bin/cd-info --no-cddb --no-device-info >> $WORKDIR/discID
+fi
+
+if [ ! -s $WORKDIR/discID ]; then
+    echo "NOT IN CDDB or MB - leaving log"
+    echo /bin/echo "$MUSICBRAINZ_DISCID: NOT IN CDDB" \>\> \"$LOGROOT/processed\" >> $BATCH
+    $CDIO eject
+    exit
+fi
+
+artist=`head -1 $WORKDIR/discID | cut -d \/ -f 1 | sed 's/ $//'`
+title=`head -1 $WORKDIR/discID | cut -d \/ -f 2 | sed 's/^ //' | cut -d \( -f 1`
+BATCH="$WORKDIR/batch.sh"
+EDATE=`date "+%Y-%m-%d"`
+
+if [ -z "$releaseID" -a "$artist" = "cddb: No match in database" ]; then
+    echo "NOT IN MUSICBRAINZ_DISCID - leaving log (artist match)"
+    echo /bin/echo "$MUSICBRAINZ_DISCID : NOT IN MUSICBRAINZ_DISCID" \>\> \"$LOGROOT/processed\" >> $BATCH
+    $CDIO eject
+    exit
+fi
+
+echo "Artist: \"$artist\" / Title: \"$title\""
+
+artistesc=`echo $artist | sed y/\"\':\\\//____/`
+titleesc=`echo $title | sed y/\"\':\\\//____/`
+echo "Escaped to: $artistesc : $titleesc"
+
+FLACDIR="$FLACROOT/$artistesc/$titleesc [$MUSICBRAINZ_DISCID]"
+
+filelist=""
+for track in $TRACKS; do
+   if [ $track -lt 10 ]; then
+	mytrack=0$track
+    else
+	mytrack=$track
+    fi
+
+    lasttrack=$mytrack
+    working=`awk "\\\$1 == $track {print \\\$0}" $WORKDIR/cddb | cut -c 18- | sed y/\"\':\\\//____/` 
+    varname=track$mytrack
+    eval $varname="\$working"
+
+    if [ -f $WORKDIR/track$mytrack.wav ]; then
+	eval echo "already have track $track: \$$varname"
+        filelist="$filelist track$mytrack.wav"
+    else
+	eval echo "ripping track $track: \$$varname"
+#        $CDIO cdrip $track
+	/usr/local/bin/cdparanoia $PARAOPTS $track $WORKDIR/track$mytrack.wav 2>&1 | tee -a $WORKDIR/paranoia
+        filelist="$filelist track$mytrack.wav"
+    fi
+done
+
+cp /dev/null $BATCH # useful for testing
+echo cd $WORKDIR >> $BATCH
+echo mkdir -p \"$FLACDIR\" >> $BATCH
+echo /usr/local/bin/flac $FLACOPTS --tag=ARTIST=\"$artist\" --tag=ALBUM=\"$title\" $filelist --tag=\"MUSICBRAINZ_ALBUMID\"=\"$releaseID\" --tag=\"TOC\"=\"$TOC\" --tag=\"MUSICBRAINZ_DISCID\"=\"$MUSICBRAINZ_DISCID\" >> $BATCH
+
+for track in $TRACKS; do
+    if [ $track -lt 10 ]; then
+	mytrack=0$track
+    else
+	mytrack=$track
+    fi
+
+    eval songtitle="\$track$mytrack"
+
+    # metaflac comes from flac
+    echo /usr/local/bin/metaflac --no-utf8-convert \
+	--set-tag=TITLE=\"$songtitle\" --set-tag=TRACKNUMBER=\"$mytrack\" \
+	--set-tag=TOTALTRACKS=\"$lasttrack\" --set-tag=TRACKTOTAL=\"$lasttrack\" \
+	\"$WORKDIR/track$mytrack.flac\" >> $BATCH
+
+    if [ -n "$MCN" -a "$MCN" != "000000000000" ]; then
+# would UPC/EAN or BARCODE be better? I don't think the BARCODE and the MCN need match.
+        echo /usr/local/bin/metaflac --no-utf8-convert --set-tag=MCN=\"$MCN\" \
+	    \"$WORKDIR/track$mytrack.flac\" >> $BATCH
+    fi
+
+    if [ -n "$PERFORMER_00" ]; then
+        echo /usr/local/bin/metaflac --no-utf8-convert \
+	    --set-tag=CDTEXT_PERFORMER_ALBUM=\"$PERFORMER_00\" \
+	    \"$WORKDIR/track$mytrack.flac\" >> $BATCH
+    fi
+
+    eval working="\$PERFORMER_$mytrack"
+    if [ -n "$working" ]; then
+        echo /usr/local/bin/metaflac --no-utf8-convert \
+	    --set-tag=CDTEXT_PERFORMER_TRACK=\"$working\" \
+	    \"$WORKDIR/track$mytrack.flac\" >> $BATCH
+    fi
+
+    eval working="\$TITLE_$mytrack"
+    if [ -n "$working" ]; then
+        echo /usr/local/bin/metaflac --no-utf8-convert \
+	    --set-tag=CDTEXT_TITLE=\"$working\" \
+	    \"$WORKDIR/track$mytrack.flac\" >> $BATCH
+    fi
+
+    eval working="\$Q_ISRC_$mytrack"
+    if [ -n "$working" -a "$working" != "000000000000" ]; then
+        echo /usr/local/bin/metaflac --no-utf8-convert \
+	    --set-tag=CD_QCHAN_ISRC=\"$working\" \
+	    --set-tag=ISRC=\"$working\" \
+	    \"$WORKDIR/track$mytrack.flac\" >> $BATCH
+    fi
+
+    songtitleesc=`echo $songtitle | cut -c 1-64`
+    echo $MV \"$WORKDIR/track$mytrack.flac\" \"$FLACDIR/$mytrack $songtitleesc.flac\" >> $BATCH
+    echo $RM \"$WORKDIR/track$mytrack.wav\" >> $BATCH
+done
+
+echo $MV \"$WORKDIR/log\" \"$LOGROOT/$MUSICBRAINZ_DISCID\" >> $BATCH
+echo /bin/cat \"$WORKDIR/discID\" \>\> \"$LOGROOT/$MUSICBRAINZ_DISCID\" >> $BATCH
+echo $RM \"$WORKDIR/discID\" >> $BATCH
+echo /bin/cat \"$WORKDIR/paranoia\" \>\> \"$LOGROOT/$MUSICBRAINZ_DISCID\" >> $BATCH
+echo $RM \"$WORKDIR/paranoia\" >> $BATCH
+echo $RM $BATCH >> $BATCH
+echo $RMDIR \"$WORKDIR\" >> $BATCH
+echo /bin/ls -l \"$FLACDIR\" \>\> \"$LOGROOT/$MUSICBRAINZ_DISCID\" >> $BATCH
+echo /bin/echo "$MUSICBRAINZ_DISCID : \"$artist\" : \"$title\" : \"$EDATE\"" \>\> \"$LOGROOT/processed\" >> $BATCH
+
+# let me know the front end is done
+$CDIO eject
+
+export SHELL=/bin/sh
+/usr/bin/batch -q m -f $BATCH
+
+# for debugging
+#cat $BATCH 
+#sh -x $BATCH
