@@ -162,6 +162,10 @@ func mb_lookup_discid(mbid string) mb_release {
 			}
 
 			ac := mb5_track_get_artistcredit(track)
+			if ac == nil {
+				ac = mb5_recording_get_artistcredit(rec)
+			}
+
 			// slog.Info("mb_lookup_discid", "artist credit", ac)
 			if ac != nil {
 				var fullartistname strings.Builder
