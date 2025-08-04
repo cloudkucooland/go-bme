@@ -131,13 +131,11 @@ func mb_lookup_discid(mbid string) mb_release {
 		defer mb5_track_list_delete(tracklist)
 
 		trackcount := mb5_track_list_get_count(tracklist)
-		// slog.Info("mb_lookup_discid", "trackcount from tracklist", trackcount)
 
 		for j := 0; j < trackcount; j++ {
 			var tmp mb_track
 
 			track := mb5_track_list_item(tracklist, j)
-			// slog.Info("mb_lookup_discid", "track", track)
 			if track == nil {
 				continue
 			}
@@ -153,28 +151,24 @@ func mb_lookup_discid(mbid string) mb_release {
 				var title [256]byte
 				mb5_recording_get_title(rec, &title[0], 255)
 				tmp.Title = strings.Trim(string(title[:]), "\x00")
-				// slog.Info("mb_lookup_discid", "recordingID", tmp.TrackID, "title", tmp.Title)
 			} else {
 				var title [256]byte
 				mb5_track_get_title(track, &title[0], 255)
 				tmp.Title = strings.Trim(string(title[:]), "\x00")
-				// slog.Info("mb_lookup_discid", "track title", tmp.Title)
 			}
 
-			ac := mb5_track_get_artistcredit(track)
+			ac := mb5_recording_get_artistcredit(rec)
 			if ac == nil {
-				ac = mb5_recording_get_artistcredit(rec)
+				// unlikely, but worth a try
+				ac = mb5_track_get_artistcredit(track)
 			}
 
-			// slog.Info("mb_lookup_discid", "artist credit", ac)
 			if ac != nil {
 				var fullartistname strings.Builder
 
 				ncl := mb5_artistcredit_get_namecreditlist(ac)
-				slog.Info("mb_lookup_discid", "name credit list", ncl)
-				// clone/delete ?
 				credits := mb5_namecredit_list_get_count(ncl)
-				slog.Info("mb_lookup_discid", "credits", credits)
+
 				for k := 0; k < credits; k++ {
 					nc := mb5_namecredit_list_item(ncl, k)
 					if nc == nil {
