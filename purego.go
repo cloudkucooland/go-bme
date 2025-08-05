@@ -42,7 +42,10 @@ var cdio_cddap_track_lastsector func(cdda_t, track_t) lsn_t
 var cdio_paranoia_init func(cdda_t) paranoia_t
 var cdio_paranoia_modeset func(paranoia_t, paranoia_mode_t)
 var cdio_paranoia_seek func(paranoia_t, lsn_t, int) lsn_t
-var cdio_paranoia_read func(paranoia_t, unsafe.Pointer) *byte // *[CDIO_CD_FRAMESIZE_RAW]byte
+
+// var cdio_paranoia_read func(paranoia_t, unsafe.Pointer) *byte
+var cdio_paranoia_read func(paranoia_t, unsafe.Pointer) *[CDIO_CD_FRAMESIZE_RAW]byte
+var cdio_paranoia_read_limited func(paranoia_t, unsafe.Pointer, int) *[CDIO_CD_FRAMESIZE_RAW]byte
 var cdio_paranoia_free func(paranoia_t)
 var cdio_get_media_changed func(cddevice_t) bool
 var mmc_get_tray_status func(cddevice_t) bool
@@ -167,6 +170,7 @@ func loadlibs() {
 	purego.RegisterLibFunc(&cdio_paranoia_modeset, libcdio_paranoia, "cdio_paranoia_modeset")
 	purego.RegisterLibFunc(&cdio_paranoia_seek, libcdio_paranoia, "cdio_paranoia_seek")
 	purego.RegisterLibFunc(&cdio_paranoia_read, libcdio_paranoia, "cdio_paranoia_read")
+	purego.RegisterLibFunc(&cdio_paranoia_read_limited, libcdio_paranoia, "cdio_paranoia_read_limited")
 	purego.RegisterLibFunc(&cdio_paranoia_free, libcdio_paranoia, "cdio_paranoia_free")
 
 	purego.RegisterLibFunc(&mb5_query_new, libmusicbrainz5, "mb5_query_new")
