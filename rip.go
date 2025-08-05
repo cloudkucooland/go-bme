@@ -1,6 +1,7 @@
 package bme
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
@@ -77,7 +78,7 @@ func cdio(ctx context.Context) {
 			}
 
 			state := mmc_test_unit_ready(cddevice, 3600)
-			slog.Info("mmc_test_unit_ready", "state", state)
+			slog.Debug("mmc_test_unit_ready", "state", state)
 			if state == 0 {
 				ripdisc(cddevice)
 				<-ticker.C // drain any pending ticks
@@ -170,29 +171,32 @@ func ripdisc(cddevice cddevice_t) {
 			slog.Error("unable to open file", "error", err.Error())
 			continue
 		}
-		slog.Info("paranoia", "fs", fs, "ls", ls, "file", rippath)
+		// modest gains if track 1 starts at sector 0, otherwise useless
+		buffer := bufio.NewWriterSize(rip, int(ls-fs)*CDIO_CD_FRAMESIZE_RAW)
+		slog.Info("paranoia", "first sector", fs, "last sector", ls, "file", rippath)
 
 		write_wav_header(rip, uint32(ls-fs)*uint32(CDIO_CD_FRAMESIZE_RAW))
 
 		cdio_paranoia_seek(para, fs, SEEK_SET)
-
 		msg := cdio_cddap_messages(cdda)
 		merr := cdio_cddap_errors(cdda)
 		if msg != "" || merr != "" {
-			slog.Info("paranoia", "msg", msg, "err", merr)
+			slog.Info("paranoia", "message", msg, "error", merr)
 		}
 
 		for i := fs; i <= ls; i++ {
-			bufptr := cdio_paranoia_read(para, unsafe.Pointer(uintptr(0)))
-			bb := unsafe.Slice(bufptr, CDIO_CD_FRAMESIZE_RAW) // probably a faster way to do this
-			rip.Write(bb)
+			if debug && i%1000 == 0 {
+				slog.Debug("paranoia", "sector", i)
+			}
+			bufptr := cdio_paranoia_read_limited(para, unsafe.Pointer(uintptr(0)), 20)
+			buffer.Write(bufptr[:])
 			msg := cdio_cddap_messages(cdda)
 			merr := cdio_cddap_errors(cdda)
 			if msg != "" || merr != "" {
-				slog.Info("paranoia", "msg", msg, "err", merr)
+				slog.Info("paranoia", "message", msg, "error", merr)
 			}
 		}
-
+		buffer.Flush()
 		rip.Close()
 	}
 
@@ -296,8 +300,6 @@ func get_cdtext(d *ripdisc_t, cddevice cddevice_t) {
 
 		d.Tracks = append(d.Tracks, a)
 	}
-
-	// cdtext_destroy(cdtext) // segfaults
 
 	d.MCN = mmc_get_mcn(cddevice)
 	get_toc(d, cddevice)
