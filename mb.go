@@ -188,7 +188,9 @@ func mb_lookup_discid(mbid string) mb_release {
 					}
 				}
 				tmp.Artist = fullartistname.String()
-				slog.Info("mb_lookup_discid", "full artist name", tmp.Artist)
+				if tmp.Artist != "" {
+					slog.Info("mb_lookup_discid", "full artist name", tmp.Artist)
+				}
 			}
 			mbr.Tracks = append(mbr.Tracks, tmp)
 		}
