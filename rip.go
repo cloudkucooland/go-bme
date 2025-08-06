@@ -17,6 +17,11 @@ import (
 	// github.com/michiwend/gomusicbrainz
 )
 
+type BufWriter interface {
+	Write([]byte) (int, error)
+	WriteString(string) (int, error)
+}
+
 type ripdisc_t struct {
 	Firsttrack track_t
 	Trackcount track_t
@@ -171,11 +176,12 @@ func ripdisc(cddevice cddevice_t) {
 			slog.Error("unable to open file", "error", err.Error())
 			continue
 		}
+
 		// modest gains if track 1 starts at sector 0, otherwise useless
-		buffer := bufio.NewWriterSize(rip, int(ls-fs)*CDIO_CD_FRAMESIZE_RAW)
+		buffer := bufio.NewWriterSize(rip, 1000*CDIO_CD_FRAMESIZE_RAW)
 		slog.Info("paranoia", "first sector", fs, "last sector", ls, "file", rippath)
 
-		write_wav_header(rip, uint32(ls-fs)*uint32(CDIO_CD_FRAMESIZE_RAW))
+		write_wav_header(buffer, uint32(ls-fs)*uint32(CDIO_CD_FRAMESIZE_RAW))
 
 		cdio_paranoia_seek(para, fs, SEEK_SET)
 		msg := cdio_cddap_messages(cdda)
@@ -239,7 +245,7 @@ func get_mbdiscid(cddevice cddevice_t) string {
 	return b
 }
 
-func write_wav_header(out *os.File, size uint32) {
+func write_wav_header(out BufWriter, size uint32) {
 	i := make([]byte, 4) // scratch for for int32
 	s := make([]byte, 2) // scratch for for int16
 
