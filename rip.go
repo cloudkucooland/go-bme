@@ -123,10 +123,10 @@ func ripdisc(cddevice cddevice_t) {
 	// save to ripdata.json
 	ripdatapath := filepath.Join(fullpath, "ripdata.json")
 	ripdata, err := os.OpenFile(ripdatapath, os.O_RDWR|os.O_CREATE, 0644)
-	defer ripdata.Close()
 	if err != nil {
 		panic(err.Error())
 	}
+	defer ripdata.Close()
 	enc := json.NewEncoder(ripdata)
 	enc.Encode(d)
 
