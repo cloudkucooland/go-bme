@@ -185,8 +185,14 @@ func mb_lookup_discid(mbid string) mb_release {
 					n = strings.Trim(string(buf[:]), "\x00")
 					if n != "" {
 						fullartistname.WriteString(n)
+					} else {
+						artist := mb5_namecredit_get_artist(nc)
+						mb5_artist_get_name(artist, &buf[0], 256)
+						n = strings.Trim(string(buf[:]), "\x00")
+						fullartistname.WriteString(n)
 					}
 				}
+
 				tmp.Artist = fullartistname.String()
 				if tmp.Artist != "" {
 					slog.Info("mb_lookup_discid", "full artist name", tmp.Artist)

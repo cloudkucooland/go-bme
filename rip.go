@@ -137,7 +137,11 @@ func ripdisc(cddevice cddevice_t) {
 		return
 	}
 
-	cdio_cddap_verbose_set(cdda, CDDA_MESSAGE_FORGETIT, CDDA_MESSAGE_FORGETIT)
+	if debug {
+		cdio_cddap_verbose_set(cdda, CDDA_MESSAGE_PRINTIT, CDDA_MESSAGE_PRINTIT)
+	} else {
+		cdio_cddap_verbose_set(cdda, CDDA_MESSAGE_FORGETIT, CDDA_MESSAGE_FORGETIT)
+	}
 	cddap := cdio_cddap_open(cdda)
 	if cddap != 0 {
 		slog.Error("unable to open audio cd")

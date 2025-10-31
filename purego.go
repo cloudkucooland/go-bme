@@ -65,6 +65,7 @@ type mb5_track unsafe.Pointer
 type mb5_recording unsafe.Pointer
 type mb5_namecreditlist unsafe.Pointer
 type mb5_namecredit unsafe.Pointer
+type mb5_artist unsafe.Pointer
 
 var mb5_query_new func(string, string, int) mb5_query // "cdlookupcexample-1.0",NULL,0
 var mb5_query_lookup_discid func(mb5_query, mb5_discid) mb5_release_list
@@ -110,6 +111,8 @@ var mb5_track_list_get_count func(mb5_track_list) int
 var mb5_track_get_position func(mb5_track) int
 var mb5_recording_get_title func(mb5_recording, *byte, int)
 var mb5_recording_get_artistcredit func(mb5_recording) mb5_artist_credit
+var mb5_namecredit_get_artist func(mb5_namecredit) mb5_artist
+var mb5_artist_get_name func(mb5_artist, *byte, int)
 
 const CDIO_CDROM_LEADOUT_TRACK track_t = 0xAA
 const CDDA_MESSAGE_FORGETIT int = 0
@@ -217,4 +220,6 @@ func loadlibs() {
 	purego.RegisterLibFunc(&mb5_track_get_position, libmusicbrainz5, "mb5_track_get_position")
 	purego.RegisterLibFunc(&mb5_recording_get_title, libmusicbrainz5, "mb5_recording_get_title")
 	purego.RegisterLibFunc(&mb5_recording_get_artistcredit, libmusicbrainz5, "mb5_recording_get_artistcredit")
+	purego.RegisterLibFunc(&mb5_namecredit_get_artist, libmusicbrainz5, "mb5_namecredit_get_artist")
+	purego.RegisterLibFunc(&mb5_artist_get_name, libmusicbrainz5, "mb5_artist_get_name")
 }
