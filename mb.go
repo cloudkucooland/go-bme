@@ -1,58 +1,54 @@
 package bme
 
 import (
-	// "fmt"
 	"log/slog"
 	"strings"
 	"unsafe"
 )
 
 type mb_release struct {
-	DiscID       string // done
-	ReleaseID    string // done
-	AlbumArtist  string // done
-	Title        string // done
-	DiscPosition int    // done
+	DiscID       string
+	ReleaseID    string
+	AlbumArtist  string
+	Title        string
+	DiscPosition int
 	Tracks       []mb_track
 }
 
 type mb_track struct {
-	Position int    // done
-	TrackID  string // get from recording?
-	Artist   string //
-	Title    string // done
+	Position int
+	TrackID  string
+	Artist   string
+	Title    string
 }
 
-// https://github.com/metabrainz/libmusicbrainz/blob/4efbed3afae11ef68281816088d7cf3d0f704dfe/tests/ctest.c
-func mb_lookup_discid(mbid string) mb_release {
-	var mbr mb_release
-
-	mbr.DiscID = mbid
+func mb_lookup_discid(mbid string, expectedTracks int) []mb_release {
+	var releases []mb_release
 
 	query := mb5_query_new("bme-tag-0.0", "musicbrainz.org", 0)
 	if query == nil {
-		slog.Error("mb_lookup_discid", "unable to get query")
-		return mbr
+		slog.Error("mb_lookup_discid: unable to get query")
+		return releases
 	}
 
 	metadata1 := mb5_query_query(query, "discid", mbid, "", 0, nil, nil)
+	if metadata1 == nil {
+		slog.Info("mb_lookup_discid", "msg", "no results")
+		return releases
+	}
 	metadata1 = mb5_metadata_clone(metadata1)
 	defer mb5_metadata_delete(metadata1)
 
 	result := mb5_query_get_lastresult(query)
 	if result != 0 {
 		mb_error_message("last query result", query)
-		return mbr
-	}
-	if metadata1 == nil {
-		slog.Info("mb_lookup_discid", "msg", "no results")
-		return mbr
+		return releases
 	}
 
 	disc := mb5_metadata_get_disc(metadata1)
 	if disc == nil {
 		mb_error_message("get_disc", query)
-		return mbr
+		return releases
 	}
 
 	disc = mb5_disc_clone(disc)
@@ -61,15 +57,17 @@ func mb_lookup_discid(mbid string) mb_release {
 	rl := mb5_disc_get_releaselist(disc)
 	if rl == nil {
 		mb_error_message("get_releaselist", query)
-		return mbr
+		return releases
 	}
 	rl = mb5_release_list_clone(rl)
 	defer mb5_release_list_delete(rl)
 
 	rcount := mb5_release_list_size(rl)
 	for e := 0; e < rcount; e++ {
-		shortrelease := mb5_release_list_item(rl, e)
+		var mbr mb_release
+		mbr.DiscID = mbid
 
+		shortrelease := mb5_release_list_item(rl, e)
 		shortrelease = mb5_release_clone(shortrelease)
 		defer mb5_release_delete(shortrelease)
 
@@ -102,7 +100,6 @@ func mb_lookup_discid(mbid string) mb_release {
 			mb_error_message("full release nil", query)
 			continue
 		}
-		// clone/delete
 
 		medialist := mb5_release_media_matching_discid(fullrelease, mbid)
 		if medialist == nil {
@@ -121,7 +118,6 @@ func mb_lookup_discid(mbid string) mb_release {
 			mb_error_message("medium nil", query)
 			continue
 		}
-		mbr.DiscPosition = mb5_medium_get_position(medium)
 
 		tracklist := mb5_medium_get_tracklist(medium)
 		if tracklist == nil {
@@ -131,6 +127,12 @@ func mb_lookup_discid(mbid string) mb_release {
 		defer mb5_track_list_delete(tracklist)
 
 		trackcount := mb5_track_list_get_count(tracklist)
+		if expectedTracks > 0 && trackcount != expectedTracks {
+			slog.Debug("skipping release due to track count mismatch", "title", mbr.Title, "mb_tracks", trackcount, "cd_tracks", expectedTracks)
+			continue
+		}
+
+		mbr.DiscPosition = mb5_medium_get_position(medium)
 
 		for j := 0; j < trackcount; j++ {
 			var tmp mb_track
@@ -159,13 +161,11 @@ func mb_lookup_discid(mbid string) mb_release {
 
 			ac := mb5_recording_get_artistcredit(rec)
 			if ac == nil {
-				// unlikely, but worth a try
 				ac = mb5_track_get_artistcredit(track)
 			}
 
 			if ac != nil {
 				var fullartistname strings.Builder
-
 				ncl := mb5_artistcredit_get_namecreditlist(ac)
 				credits := mb5_namecredit_list_get_count(ncl)
 
@@ -192,17 +192,14 @@ func mb_lookup_discid(mbid string) mb_release {
 						fullartistname.WriteString(n)
 					}
 				}
-
 				tmp.Artist = fullartistname.String()
-				if tmp.Artist != "" {
-					slog.Info("mb_lookup_discid", "full artist name", tmp.Artist)
-				}
 			}
 			mbr.Tracks = append(mbr.Tracks, tmp)
 		}
+		releases = append(releases, mbr)
 	}
 
-	return mbr
+	return releases
 }
 
 func mb_error_message(msg string, query mb5_query) {

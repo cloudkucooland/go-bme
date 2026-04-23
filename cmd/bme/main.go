@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/cloudkucooland/go-bme"
 	"github.com/urfave/cli/v2"
 )
@@ -36,10 +37,20 @@ func main() {
 		},
 		Action: func(cCtx *cli.Context) error {
 			bme.Debug(cCtx.Bool("debug"))
-
 			dir := cCtx.String("dir")
-			if err := bme.Start(dir); err != nil {
-				log.Panic(err)
+
+			p := tea.NewProgram(bme.NewModel(), tea.WithAltScreen())
+
+			// Start logic in a goroutine
+			go func() {
+				if err := bme.Start(dir, p); err != nil {
+					p.Send(bme.StatusMsg{Component: "system", Status: err.Error()})
+				}
+				p.Quit()
+			}()
+
+			if _, err := p.Run(); err != nil {
+				return err
 			}
 
 			return nil

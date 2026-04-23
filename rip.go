@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unsafe"
+
+	tea "github.com/charmbracelet/bubbletea"
 	// github.com/michiwend/gomusicbrainz
 )
 
@@ -33,7 +35,7 @@ type ripdisc_t struct {
 	Title      string
 	Performer  string
 	Songwriter string
-	Composser  string
+	Composer   string
 	Message    string
 	Arranger   string
 	Text_ISRC  string
@@ -51,7 +53,7 @@ type riptrack_t struct {
 	Title      string
 	Performer  string
 	Songwriter string
-	Composser  string
+	Composer   string
 	Message    string
 	Arranger   string
 	Text_ISRC  string
@@ -63,57 +65,92 @@ type riptrack_t struct {
 	ISRC string
 }
 
-func cdio(ctx context.Context) {
+func cdio(ctx context.Context, p *tea.Program) {
 	slog.Info("starting CD ripping")
+	if p != nil {
+		p.Send(StatusMsg{"ripper", "Starting"})
+	}
 
 	devicename := cdio_get_default_device(nil)
 
 	ticker := time.NewTicker(time.Second * 10)
 	defer ticker.Stop()
 
-	// _ = cdio_get_media_changed(cddevice)
 	for {
 		select {
 		case <-ticker.C:
 			cddevice := cdio_open(devicename, unsafe.Pointer(uintptr(0)))
+			if cddevice == nil {
+				if p != nil {
+					p.Send(StatusMsg{"ripper", "Waiting for device"})
+				}
+				continue
+			}
 
 			if opened := mmc_get_tray_status(cddevice); opened {
-				// slog.Info("tray open")
+				if p != nil {
+					p.Send(StatusMsg{"ripper", "Tray open"})
+				}
+				cdio_destroy(cddevice)
 				continue
 			}
 
 			state := mmc_test_unit_ready(cddevice, 3600)
 			slog.Debug("mmc_test_unit_ready", "state", state)
 			if state == 0 {
-				ripdisc(cddevice)
-				<-ticker.C // drain any pending ticks
+				if p != nil {
+					p.Send(StatusMsg{"ripper", "Disc detected"})
+				}
+				if err := ripdisc(cddevice, p); err != nil {
+					slog.Error("ripping failed", "error", err)
+					if p != nil {
+						p.Send(StatusMsg{"ripper", fmt.Sprintf("Error: %v", err)})
+					}
+				}
+				// Drain any pending ticks
+				select {
+				case <-ticker.C:
+				default:
+				}
+			} else {
+				if p != nil {
+					p.Send(StatusMsg{"ripper", "Checking tray..."})
+				}
 			}
 
 			cdio_destroy(cddevice)
 		case <-ctx.Done():
 			slog.Info("shutdown: stopping CD ripping")
+			if p != nil {
+				p.Send(StatusMsg{"ripper", "Stopped"})
+			}
 			return
 		}
 	}
 }
 
-func ripdisc(cddevice cddevice_t) {
+func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 	d := ripdisc_t{}
 
 	d.MBdiscid = get_mbdiscid(cddevice)
-	fullpath := filepath.Join(ripdir, strings.ReplaceAll(d.MBdiscid, "/", "_"))
+	if p != nil {
+		p.Send(StatusMsg{"ripper", fmt.Sprintf("Ripping %s", d.MBdiscid)})
+	}
+
+	mbid_safe := strings.ReplaceAll(d.MBdiscid, "/", "_")
+	fullpath := filepath.Join(ripdir, mbid_safe)
 	_, err := os.Stat(fullpath)
 	if err == nil {
 		slog.Info("work directory already exists, skipping this CD", "path", fullpath)
 		mmc_eject_media(cddevice)
-		return
+		return nil
 	}
-	if err != nil && !strings.Contains(err.Error(), "no such file or directory") {
-		panic(err.Error())
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat failed for %s: %w", fullpath, err)
 	}
 
 	if err := os.MkdirAll(fullpath, 0755); err != nil {
-		panic(err.Error())
+		return fmt.Errorf("failed to create directory %s: %w", fullpath, err)
 	}
 
 	// get whatever data we can from the disc
@@ -122,19 +159,20 @@ func ripdisc(cddevice cddevice_t) {
 
 	// save to ripdata.json
 	ripdatapath := filepath.Join(fullpath, "ripdata.json")
-	ripdata, err := os.OpenFile(ripdatapath, os.O_RDWR|os.O_CREATE, 0644)
+	ripdata, err := os.OpenFile(ripdatapath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-		panic(err.Error())
+		return fmt.Errorf("unable to open %s: %w", ripdatapath, err)
 	}
 	defer ripdata.Close()
 	enc := json.NewEncoder(ripdata)
-	enc.Encode(d)
+	if err := enc.Encode(d); err != nil {
+		return fmt.Errorf("failed to encode ripdata: %w", err)
+	}
 
 	// how to do paranoia_init when we've already opened the libcdio device
 	cdda := cdio_cddap_identify_cdio(cddevice, CDDA_MESSAGE_FORGETIT, unsafe.Pointer(uintptr(0)))
 	if cdda == nil {
-		slog.Error("unable to init cdda")
-		return
+		return fmt.Errorf("unable to init cdda")
 	}
 
 	if debug {
@@ -144,54 +182,52 @@ func ripdisc(cddevice cddevice_t) {
 	}
 	cddap := cdio_cddap_open(cdda)
 	if cddap != 0 {
-		slog.Error("unable to open audio cd")
-		return
+		return fmt.Errorf("unable to open audio cd (code %d)", cddap)
 	}
 
 	// just a sanity check to make sure the disc is valid
 	firstsector := cdio_cddap_disc_firstsector(cdda)
 	if firstsector < 0 {
-		slog.Error("cdio_cddap_disc_firstsector returned error")
-		return
+		return fmt.Errorf("cdio_cddap_disc_firstsector returned error")
 	}
 
 	para := cdio_paranoia_init(cdda)
 	if para == nil {
-		slog.Error("unable to init paranoia")
-		return
+		return fmt.Errorf("unable to init paranoia")
 	}
+	defer cdio_paranoia_free(para)
 
 	cdio_paranoia_modeset(para, PARANOIA_MODE_FULL^PARANOIA_MODE_NEVERSKIP)
 
 	for _, t := range d.Tracks {
+		if p != nil {
+			p.Send(StatusMsg{"ripper", fmt.Sprintf("Track %d/%d", t.ID, d.Trackcount)})
+		}
 		fs := cdio_cddap_track_firstsector(cdda, t.ID)
 		ls := cdio_cddap_track_lastsector(cdda, t.ID)
 
-		cleantitle := strings.ReplaceAll(t.Title, "/", "_")
-		cleantitle = strings.ReplaceAll(cleantitle, "?", "_")
-		cleantitle = strings.ReplaceAll(cleantitle, ":", "_")
-		cleantitle = strings.ReplaceAll(cleantitle, ">", "_")
-		cleantitle = strings.ReplaceAll(cleantitle, "\"", "_")
+		cleantitle := strings.NewReplacer("/", "_", "?", "_", ":", "_", ">", "_", "\"", "_").Replace(t.Title)
 
 		filename := fmt.Sprintf("%02d %s.wav", t.ID, cleantitle)
 		rippath := filepath.Join(fullpath, filename)
-		rip, err := os.OpenFile(rippath, os.O_RDWR|os.O_CREATE, 0644)
+		rip, err := os.OpenFile(rippath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
-			slog.Error("unable to open file", "error", err.Error())
+			slog.Error("unable to open file", "error", err, "path", rippath)
 			continue
 		}
 
 		// modest gains if track 1 starts at sector 0, otherwise useless
 		buffer := bufio.NewWriterSize(rip, 1000*CDIO_CD_FRAMESIZE_RAW)
-		slog.Info("paranoia", "first sector", fs, "last sector", ls, "file", rippath)
+		slog.Info("paranoia", "track", t.ID, "first sector", fs, "last sector", ls, "file", rippath)
 
 		write_wav_header(buffer, uint32(ls-fs)*uint32(CDIO_CD_FRAMESIZE_RAW))
 
 		cdio_paranoia_seek(para, fs, SEEK_SET)
-		msg := cdio_cddap_messages(cdda)
-		merr := cdio_cddap_errors(cdda)
-		if msg != "" || merr != "" {
-			slog.Info("paranoia", "message", msg, "error", merr)
+		if msg := cdio_cddap_messages(cdda); msg != "" {
+			slog.Info("paranoia message", "msg", msg)
+		}
+		if merr := cdio_cddap_errors(cdda); merr != "" {
+			slog.Error("paranoia error", "err", merr)
 		}
 
 		for i := fs; i <= ls; i++ {
@@ -199,25 +235,23 @@ func ripdisc(cddevice cddevice_t) {
 				slog.Debug("paranoia", "sector", i)
 			}
 			bufptr := cdio_paranoia_read_limited(para, unsafe.Pointer(uintptr(0)), 20)
-			buffer.Write(bufptr[:])
-			msg := cdio_cddap_messages(cdda)
-			merr := cdio_cddap_errors(cdda)
-			if msg != "" || merr != "" {
-				slog.Info("paranoia", "message", msg, "error", merr)
+			if bufptr != nil {
+				buffer.Write(bufptr[:])
 			}
 		}
 		buffer.Flush()
 		rip.Close()
 	}
 
-	// cleanup paranoia
-	cdio_paranoia_free(para)
 	cdio_cddap_close_no_free_cdio(cdda)
 
 	// move files from rip to encode dir
-	move_ripdir(&d, fullpath)
+	if err := move_ripdir(&d, fullpath); err != nil {
+		return err
+	}
 
 	mmc_eject_media(cddevice)
+	return nil
 }
 
 // https://musicbrainz.org/doc/Disc_ID_Calculation
@@ -284,7 +318,7 @@ func get_cdtext(d *ripdisc_t, cddevice cddevice_t) {
 	d.Title = cdtext_get(cdtext, 0, 0)
 	d.Performer = cdtext_get(cdtext, 1, 0)
 	d.Songwriter = cdtext_get(cdtext, 2, 0)
-	d.Composser = cdtext_get(cdtext, 3, 0)
+	d.Composer = cdtext_get(cdtext, 3, 0)
 	d.Message = cdtext_get(cdtext, 4, 0)
 	d.Arranger = cdtext_get(cdtext, 5, 0)
 	d.Text_ISRC = cdtext_get(cdtext, 6, 0)
@@ -298,7 +332,7 @@ func get_cdtext(d *ripdisc_t, cddevice cddevice_t) {
 		a.Title = cdtext_get(cdtext, 0, i)
 		a.Performer = cdtext_get(cdtext, 1, i)
 		a.Songwriter = cdtext_get(cdtext, 2, i)
-		a.Composser = cdtext_get(cdtext, 3, i)
+		a.Composer = cdtext_get(cdtext, 3, i)
 		a.Message = cdtext_get(cdtext, 4, i)
 		a.Arranger = cdtext_get(cdtext, 5, i)
 		a.Text_ISRC = cdtext_get(cdtext, 6, i)
@@ -329,16 +363,18 @@ func get_toc(d *ripdisc_t, cddevice cddevice_t) {
 	d.TOC = toc.String()
 }
 
-func move_ripdir(d *ripdisc_t, rippath string) {
-	encodepath := filepath.Join(encodedir, strings.ReplaceAll(d.MBdiscid, "/", "_"))
-	if _, err := os.Stat(encodepath); err == nil { // no err means file exists
+func move_ripdir(d *ripdisc_t, rippath string) error {
+	mbid_safe := strings.ReplaceAll(d.MBdiscid, "/", "_")
+	encodepath := filepath.Join(encodedir, mbid_safe)
+	if _, err := os.Stat(encodepath); err == nil {
 		slog.Info("encode directory already exists, skipping move", "path", encodepath)
-		return
+		return nil
 	}
 
 	if err := os.Rename(rippath, encodepath); err != nil {
-		panic(err.Error())
+		return fmt.Errorf("failed to move %s to %s: %w", rippath, encodepath, err)
 	}
+	return nil
 }
 
 func load_ripdata(workdir string, mbid string) ripdisc_t {
@@ -347,10 +383,11 @@ func load_ripdata(workdir string, mbid string) ripdisc_t {
 	ripdatapath := filepath.Join(workdir, mbid, "ripdata.json")
 	ripdata, err := os.ReadFile(ripdatapath)
 	if err != nil {
-		panic(err.Error())
+		slog.Error("failed to read ripdata", "path", ripdatapath, "error", err)
+		return o
 	}
 	if err := json.Unmarshal(ripdata, &o); err != nil {
-		panic(err.Error())
+		slog.Error("failed to unmarshal ripdata", "error", err)
 	}
 	return o
 }

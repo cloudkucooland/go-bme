@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type job struct {
@@ -27,8 +29,11 @@ type result struct {
 	err error
 }
 
-func encoder(ctx context.Context) {
+func encoder(ctx context.Context, p *tea.Program) {
 	slog.Info("starting batch encoder")
+	if p != nil {
+		p.Send(StatusMsg{"encoder", "Starting"})
+	}
 
 	ticker := time.NewTicker(time.Second * 10)
 	defer ticker.Stop()
@@ -36,40 +41,50 @@ func encoder(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			process_directory()
+			if err := process_directory(p); err != nil {
+				slog.Error("encoder failed", "error", err)
+				if p != nil {
+					p.Send(StatusMsg{"encoder", fmt.Sprintf("Error: %v", err)})
+				}
+			}
 		case <-ctx.Done():
 			slog.Info("shutdown: stopping batch encoder")
+			if p != nil {
+				p.Send(StatusMsg{"encoder", "Stopped"})
+			}
+			return
 		}
 	}
-
-	slog.Info("batch encoder done")
 }
 
-func process_directory() {
+func process_directory(p *tea.Program) error {
 	joblimit := runtime.NumCPU()
 
 	// get all rips waiting to be encoded
 	albums, err := os.ReadDir(encodedir)
 	if err != nil {
-		slog.Error("unable to read encode directory", "err", err.Error())
-		panic(err.Error())
+		return fmt.Errorf("unable to read encode directory: %w", err)
 	}
 	if len(albums) == 0 {
-		slog.Debug("no directories to encode, sleeping")
-		time.Sleep(60 * time.Second)
-		return
+		if p != nil {
+			p.Send(StatusMsg{"encoder", "Waiting for rips"})
+		}
+		return nil
 	}
 
 	// uses the first directory alphabetically, by MB_discid
-	d := filepath.Join(encodedir, string(albums[0].Name()))
+	mbid := albums[0].Name()
+	d := filepath.Join(encodedir, mbid)
+	if p != nil {
+		p.Send(StatusMsg{"encoder", fmt.Sprintf("Encoding %s", mbid)})
+	}
+
 	files, err := os.ReadDir(d)
 	if err != nil {
-		slog.Error("unable to read directory", "err", err.Error(), "dir", d)
-		panic(err.Error())
+		return fmt.Errorf("unable to read directory %s: %w", d, err)
 	}
-	rd := load_ripdata(encodedir, string(albums[0].Name()))
+	rd := load_ripdata(encodedir, mbid)
 
-	//
 	tracks := 0
 	for _, file := range files {
 		if strings.HasSuffix(file.Name(), ".wav") {
@@ -78,7 +93,7 @@ func process_directory() {
 	}
 
 	jobs := make(chan job, tracks)
-	results := make(chan result, joblimit)
+	results := make(chan result, tracks)
 	var wg sync.WaitGroup
 
 	// start workers
@@ -95,7 +110,8 @@ func process_directory() {
 
 		tracknum, err := strconv.Atoi(file.Name()[0:2])
 		if err != nil {
-			panic(err)
+			slog.Error("invalid track number prefix", "file", file.Name(), "error", err)
+			continue
 		}
 
 		jobs <- job{id: i, filename: filepath.Join(d, file.Name()), ripdata: rd, track: track_t(tracknum), tracks: track_t(tracks)}
@@ -109,18 +125,26 @@ func process_directory() {
 	}()
 
 	// read the results as each job finishes
+	var encodeError bool
 	for r := range results {
-		slog.Info("job done", "job id", r.id)
-		if err != nil {
-			slog.Error("job", "error", r.err.Error())
+		if r.err != nil {
+			slog.Error("job failed", "job id", r.id, "error", r.err)
+			encodeError = true
+		} else {
+			slog.Info("job done", "job id", r.id)
 		}
 	}
 
-	// move to tag directory
-	t := filepath.Join(tagdir, string(albums[0].Name()))
-	if err != os.Rename(d, t) {
-		panic(err.Error())
+	if encodeError {
+		return fmt.Errorf("one or more encoding jobs failed for %s", mbid)
 	}
+
+	// move to tag directory
+	t := filepath.Join(tagdir, mbid)
+	if err := os.Rename(d, t); err != nil {
+		return fmt.Errorf("failed to move to tag directory: %w", err)
+	}
+	return nil
 }
 
 func worker(id int, jobs <-chan job, results chan<- result, wg *sync.WaitGroup) {
@@ -134,44 +158,36 @@ func worker(id int, jobs <-chan job, results chan<- result, wg *sync.WaitGroup) 
 		args := []string{"-q", trackarg}
 
 		if job.ripdata.Title != "" {
-			tmp := fmt.Sprintf("--album=%s", job.ripdata.Title)
-			args = append(args, tmp)
+			args = append(args, fmt.Sprintf("--album=%s", job.ripdata.Title))
 		}
 
 		if job.ripdata.Performer != "" {
-			tmp := fmt.Sprintf("--albumArtist=%s", job.ripdata.Performer)
-			args = append(args, tmp)
+			args = append(args, fmt.Sprintf("--albumArtist=%s", job.ripdata.Performer))
 		}
 
 		for _, trackdata := range job.ripdata.Tracks {
 			if trackdata.ID == job.track {
 				if trackdata.Performer != "" {
-					tmp := fmt.Sprintf("--artist=%s", trackdata.Performer)
-					args = append(args, tmp)
+					args = append(args, fmt.Sprintf("--artist=%s", trackdata.Performer))
 				}
-
 				if trackdata.Title != "" {
-					tmp := fmt.Sprintf("--title=%s", trackdata.Title)
-					args = append(args, tmp)
+					args = append(args, fmt.Sprintf("--title=%s", trackdata.Title))
 				}
 			}
 		}
 
-		args = append(args, job.filename)
-		args = append(args, alacname)
-
-		slog.Info("args", "args", args)
+		args = append(args, job.filename, alacname)
+		slog.Debug("alacenc args", "args", args)
 
 		cmd := exec.Command("/usr/local/bin/alacenc", args...)
 		if err := cmd.Run(); err != nil {
-			slog.Error("alac", "error", err.Error(), "cmd", cmd)
-			results <- result{id: job.id, err: err}
-			panic(err.Error())
-		}
-		if err := os.Remove(job.filename); err != nil {
-			slog.Error("remove", "error", err.Error())
+			slog.Error("alacenc failed", "error", err, "file", job.filename)
 			results <- result{id: job.id, err: err}
 			continue
+		}
+		if err := os.Remove(job.filename); err != nil {
+			slog.Error("failed to remove wav file", "error", err, "file", job.filename)
+			// not a fatal error for the encoding process, but we should report it
 		}
 		results <- result{id: job.id, err: nil}
 	}

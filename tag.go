@@ -2,7 +2,8 @@ package bme
 
 import (
 	"context"
-	// "fmt"
+	"encoding/json"
+	"fmt"
 	"github.com/Sorrow446/go-mp4tag"
 	"log/slog"
 	"os"
@@ -10,10 +11,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-func tagger(ctx context.Context) {
+// Channel for TUI to send selection back to tagger
+var selectionChan = make(chan mb_release)
+
+func tagger(ctx context.Context, p *tea.Program) {
 	slog.Info("starting batch tagger")
+	if p != nil {
+		p.Send(StatusMsg{"tagger", "Starting"})
+	}
 
 	ticker := time.NewTicker(time.Second * 10)
 	defer ticker.Stop()
@@ -21,43 +30,93 @@ func tagger(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			tag_process_directories()
+			if err := tag_process_directories(p); err != nil {
+				slog.Error("tagger failed", "error", err)
+				if p != nil {
+					p.Send(StatusMsg{"tagger", fmt.Sprintf("Error: %v", err)})
+				}
+			}
 		case <-ctx.Done():
 			slog.Info("shutdown: stopping batch tagger")
+			if p != nil {
+				p.Send(StatusMsg{"tagger", "Stopped"})
+			}
+			return
 		}
 	}
-
-	slog.Info("batch tagger done")
 }
 
-func tag_process_directories() {
+func tag_process_directories(p *tea.Program) error {
 	albums, err := os.ReadDir(tagdir)
 	if err != nil {
-		slog.Error("unable to read tag directory", "err", err.Error())
-		panic(err.Error())
+		return fmt.Errorf("unable to read tag directory: %w", err)
 	}
 	if len(albums) == 0 {
-		slog.Debug("no directories to tag, sleeping")
-		time.Sleep(60 * time.Second)
-		return
+		if p != nil {
+			p.Send(StatusMsg{"tagger", "Waiting for encoded files"})
+		}
+		return nil
 	}
 
 	for i := range albums {
 		mbid := albums[i].Name()
-		tag_process_directory(mbid)
+		if p != nil {
+			p.Send(StatusMsg{"tagger", fmt.Sprintf("Tagging %s", mbid)})
+		}
+		if err := tag_process_directory(mbid, p); err != nil {
+			slog.Error("failed to process directory", "mbid", mbid, "error", err)
+		}
 	}
+	return nil
 }
 
-func tag_process_directory(mbid string) {
+func tag_process_directory(mbid string, p *tea.Program) error {
 	d := filepath.Join(tagdir, mbid)
 	files, err := os.ReadDir(d)
 	if err != nil {
-		slog.Error("unable to read directory", "err", err.Error(), "dir", d)
-		panic(err.Error())
+		return fmt.Errorf("unable to read directory %s: %w", d, err)
 	}
 
-	ripdata := load_ripdata(tagdir, string(mbid))
-	mbdata := mb_lookup_discid(mbid)
+	ripdata := load_ripdata(tagdir, mbid)
+
+	var mbdata mb_release
+
+	// Check if we already have a selection
+	selectedPath := filepath.Join(d, "selected_mbdata.json")
+	if data, err := os.ReadFile(selectedPath); err == nil {
+		json.Unmarshal(data, &mbdata)
+	} else {
+		releases := mb_lookup_discid(mbid, int(ripdata.Trackcount))
+		if len(releases) == 0 {
+			slog.Warn("no MusicBrainz matches found", "mbid", mbid)
+			if p != nil {
+				p.Send(StatusMsg{"tagger", "No MB matches found"})
+			}
+			// Fallback to basic ripdata? For now, just continue or skip.
+			return nil
+		} else if len(releases) == 1 {
+			mbdata = releases[0]
+		} else {
+			// Multiple matches - trigger TUI menu
+			if p != nil {
+				p.Send(MBMatchesMsg{MBID: mbid, Releases: releases})
+				// Wait for selection
+				select {
+				case mbdata = <-selectionChan:
+					// save for next time
+					if bytes, err := json.Marshal(mbdata); err == nil {
+						os.WriteFile(selectedPath, bytes, 0644)
+					}
+				case <-time.After(time.Minute * 5):
+					return fmt.Errorf("timeout waiting for release selection for %s", mbid)
+				}
+			} else {
+				// non-interactive mode? pick first
+				mbdata = releases[0]
+			}
+		}
+	}
+
 	slog.Info("mb_data", "data", mbdata)
 
 	// do work
@@ -66,92 +125,119 @@ func tag_process_directory(mbid string) {
 			continue
 		}
 
-		newtags := mp4tag.MP4Tags{
-			ItunesAdvisory: 0,
-			ItunesAlbumID:  -1,
-			ItunesArtistID: -1,
-		}
-
-		newtags.Custom = make(map[string]string)
-		newtags.Custom["MusicBrainz Disc Id"] = mbid
-		if ripdata.TOC != "" {
-			newtags.Custom["TOC"] = ripdata.TOC
-		}
-
-		if ripdata.MCN != "" {
-			newtags.Custom["MCN"] = ripdata.MCN
-		}
-		if ripdata.UPC_EAN != "" {
-			newtags.Custom["UPC"] = ripdata.UPC_EAN
-		}
-
-		newtags.Custom["MusicBrainz Disc Id"] = mbid
-
-		if mbdata.ReleaseID != "" {
-			newtags.Custom["MusicBrainz Album Id"] = mbdata.ReleaseID
-		}
-		if mbdata.AlbumArtist != "" {
-			newtags.AlbumArtist = mbdata.AlbumArtist
-		}
-		if mbdata.Title != "" {
-			newtags.Album = mbdata.Title
-		}
-		if mbdata.DiscPosition != 0 {
-			newtags.DiscNumber = int16(mbdata.DiscPosition)
-		}
-
-		pos, err := strconv.Atoi(string(f.Name())[0:2]) // convert []bytes to string just to take 2 bytes?
-		if err != nil {
-			slog.Error(err.Error(), "file", string(f.Name()))
-			continue
-		}
-		for _, t := range mbdata.Tracks {
-			if t.Position == pos {
-				if t.Title != "" {
-					newtags.Title = t.Title
-				}
-				if t.TrackID != "" {
-					newtags.Custom["MusicBrainz Release Track Id"] = t.TrackID // deprecated?
-					newtags.Custom["MusicBrainz Track Id"] = t.TrackID
-				}
-				if t.Artist != "" {
-					newtags.Artist = t.Artist
-				}
-			}
-		}
-
-		for _, t := range ripdata.Tracks {
-			if int(t.ID) == pos {
-				if t.ISRC != "" {
-					newtags.Custom["ISRC"] = t.ISRC
-				}
-			}
-		}
-
-		fullpath := filepath.Join(d, string(f.Name()))
-		mp4, err := mp4tag.Open(fullpath)
-		if err != nil {
-			slog.Error("unable to open mp4 file", "error", err.Error(), "file", fullpath)
-			continue
-		}
-		defer mp4.Close()
-		mp4.UpperCustom(false)
-
-		_, err = mp4.Read()
-		if err != nil {
-			slog.Error("unable to read mp4 metadata", "err", err.Error(), "file", fullpath)
-			continue
-		}
-
-		if err := mp4.Write(&newtags, []string{}); err != nil {
-			slog.Error("saving", "error", err.Error())
-			panic(err.Error())
+		if err := tag_file(d, f.Name(), mbid, ripdata, mbdata); err != nil {
+			slog.Error("failed to tag file", "file", f.Name(), "error", err)
 		}
 	}
 
-	// move to tag directory
+	// move to done directory
 	t := filepath.Join(finaldir, mbid)
-	if err != os.Rename(d, t) {
-		panic(err.Error())
+	if err := os.Rename(d, t); err != nil {
+		return fmt.Errorf("failed to move to final directory: %w", err)
 	}
+	return nil
+}
+
+func tag_file(d, filename, mbid string, ripdata ripdisc_t, mbdata mb_release) error {
+	newtags := mp4tag.MP4Tags{
+		ItunesAdvisory: 0,
+		ItunesAlbumID:  -1,
+		ItunesArtistID: -1,
+	}
+
+	newtags.Custom = make(map[string]string)
+	newtags.Custom["MusicBrainz Disc Id"] = mbid
+	if ripdata.TOC != "" {
+		newtags.Custom["TOC"] = ripdata.TOC
+	}
+
+	if ripdata.MCN != "" {
+		newtags.Custom["MCN"] = ripdata.MCN
+	}
+	if ripdata.UPC_EAN != "" {
+		newtags.Custom["UPC"] = ripdata.UPC_EAN
+	}
+
+	if mbdata.ReleaseID != "" {
+		newtags.Custom["MusicBrainz Album Id"] = mbdata.ReleaseID
+	}
+	if mbdata.AlbumArtist != "" {
+		newtags.AlbumArtist = mbdata.AlbumArtist
+	}
+	if mbdata.Title != "" {
+		newtags.Album = mbdata.Title
+	}
+	if mbdata.DiscPosition != 0 {
+		newtags.DiscNumber = int16(mbdata.DiscPosition)
+	}
+
+	if ripdata.Genre != "" {
+		newtags.Custom["Genre"] = ripdata.Genre
+	}
+	if ripdata.Trackcount != 0 {
+		newtags.TrackTotal = int16(ripdata.Trackcount)
+	}
+
+	pos, err := strconv.Atoi(filename[0:2])
+	if err != nil {
+		return fmt.Errorf("invalid track number prefix in %s: %w", filename, err)
+	}
+
+	newtags.TrackNumber = int16(pos)
+
+	for _, t := range mbdata.Tracks {
+		if t.Position == pos {
+			if t.Title != "" {
+				newtags.Title = t.Title
+			}
+			if t.TrackID != "" {
+				newtags.Custom["MusicBrainz Release Track Id"] = t.TrackID
+				newtags.Custom["MusicBrainz Track Id"] = t.TrackID
+			}
+			if t.Artist != "" {
+				newtags.Artist = t.Artist
+			}
+		}
+	}
+
+	for _, t := range ripdata.Tracks {
+		if int(t.ID) == pos {
+			if t.ISRC != "" {
+				newtags.Custom["ISRC"] = t.ISRC
+			}
+			if t.Composer != "" {
+				newtags.Custom["Composer"] = t.Composer
+			}
+			if t.Songwriter != "" {
+				newtags.Custom["Songwriter"] = t.Songwriter
+			}
+		}
+	}
+
+	if ripdata.Composer != "" && newtags.Custom["Composer"] == "" {
+		newtags.Custom["Composer"] = ripdata.Composer
+	}
+	if ripdata.Songwriter != "" && newtags.Custom["Songwriter"] == "" {
+		newtags.Custom["Songwriter"] = ripdata.Songwriter
+	}
+
+	fullpath := filepath.Join(d, filename)
+	mp4, err := mp4tag.Open(fullpath)
+	if err != nil {
+		return fmt.Errorf("unable to open mp4 file %s: %w", fullpath, err)
+	}
+	defer mp4.Close()
+
+	mp4.UpperCustom(false)
+
+	_, err = mp4.Read()
+	if err != nil {
+		return fmt.Errorf("unable to read mp4 metadata from %s: %w", fullpath, err)
+	}
+
+	if err := mp4.Write(&newtags, []string{}); err != nil {
+		return fmt.Errorf("failed writing tags to %s: %w", fullpath, err)
+	}
+
+	return nil
 }
