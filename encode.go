@@ -30,7 +30,6 @@ type result struct {
 }
 
 func encoder(ctx context.Context, p *tea.Program) {
-	p.Send(StatusMsg{"encoder", "starting batch encoder"})
 	if p != nil {
 		p.Send(StatusMsg{"encoder", "Starting"})
 	}
@@ -48,7 +47,6 @@ func encoder(ctx context.Context, p *tea.Program) {
 				}
 			}
 		case <-ctx.Done():
-			p.Send(StatusMsg{"encoder", "stopping batch encoder"})
 			if p != nil {
 				p.Send(StatusMsg{"encoder", "Stopped"})
 			}
@@ -66,7 +64,9 @@ func process_directory(p *tea.Program) error {
 		return fmt.Errorf("unable to read encode directory: %w", err)
 	}
 	if len(albums) == 0 {
-		// if p != nil { p.Send(StatusMsg{"encoder", "Waiting for rips"}) }
+		if p != nil {
+			p.Send(StatusMsg{"encoder", "Idle"})
+		}
 		return nil
 	}
 
@@ -74,7 +74,7 @@ func process_directory(p *tea.Program) error {
 	mbid := albums[0].Name()
 	d := filepath.Join(encodedir, mbid)
 	if p != nil {
-		p.Send(StatusMsg{"encoder", fmt.Sprintf("Encoding %s", mbid)})
+		p.Send(StatusMsg{"encoder", fmt.Sprintf("Encoding %s...", mbid)})
 	}
 
 	files, err := os.ReadDir(d)
@@ -97,7 +97,7 @@ func process_directory(p *tea.Program) error {
 	// start workers
 	for i := 1; i <= joblimit; i++ {
 		wg.Add(1)
-		go worker(i, jobs, results, &wg)
+		go worker(i, jobs, results, &wg, p)
 	}
 
 	// pass all the jobs into the queue as quickly as it can
@@ -124,12 +124,16 @@ func process_directory(p *tea.Program) error {
 
 	// read the results as each job finishes
 	var encodeError bool
+	completed := 0
 	for r := range results {
 		if r.err != nil {
 			slog.Error("job failed", "job id", r.id, "error", r.err)
 			encodeError = true
 		} else {
-			p.Send(StatusMsg{"encoder", fmt.Sprintf("job %d done", r.id)})
+			completed++
+			if p != nil {
+				p.Send(StatusMsg{"encoder", fmt.Sprintf("[%s] %d/%d", mbid, completed, tracks)})
+			}
 		}
 	}
 
@@ -138,6 +142,9 @@ func process_directory(p *tea.Program) error {
 	}
 
 	// move to tag directory
+	if p != nil {
+		p.Send(StatusMsg{"encoder", "Moving to tagger..."})
+	}
 	t := filepath.Join(tagdir, mbid)
 	if err := os.Rename(d, t); err != nil {
 		return fmt.Errorf("failed to move to tag directory: %w", err)
@@ -145,11 +152,10 @@ func process_directory(p *tea.Program) error {
 	return nil
 }
 
-func worker(id int, jobs <-chan job, results chan<- result, wg *sync.WaitGroup) {
+func worker(id int, jobs <-chan job, results chan<- result, wg *sync.WaitGroup, p *tea.Program) {
 	defer wg.Done()
 
 	for job := range jobs {
-		// p.Send(StatusMsg{"encoder", fmt.Sprintf("processing job %d %d %s", id, job.id, job.filename)})
 		alacname := strings.ReplaceAll(job.filename, ".wav", ".m4a")
 
 		trackarg := fmt.Sprintf("--track=%d/%d", job.track, job.tracks)
@@ -185,7 +191,6 @@ func worker(id int, jobs <-chan job, results chan<- result, wg *sync.WaitGroup) 
 		}
 		if err := os.Remove(job.filename); err != nil {
 			slog.Error("failed to remove wav file", "error", err, "file", job.filename)
-			// not a fatal error for the encoding process, but we should report it
 		}
 		results <- result{id: job.id, err: nil}
 	}

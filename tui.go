@@ -35,17 +35,23 @@ var (
 	statusStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			Padding(0, 1).
-			MarginRight(1)
+			Width(40)
 
-	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EE6FF8")).
-			Bold(true)
+	ripperStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00"))
+	encoderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF"))
+	taggerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00"))
+	systemStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF00FF"))
+
+	logStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			Padding(0, 1)
 )
 
 type model struct {
 	ripperStatus  string
 	encoderStatus string
 	taggerStatus  string
+	paranoiaMode  string
 
 	mbMatches []mb_release
 	mbList    list.Model
@@ -61,6 +67,7 @@ func NewModel() model {
 		ripperStatus:  "Idle",
 		encoderStatus: "Idle",
 		taggerStatus:  "Idle",
+		paranoiaMode:  GetParanoiaName(),
 		logs:          make([]string, 0),
 	}
 }
@@ -78,16 +85,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case StatusMsg:
+		var styledStatus string
 		switch msg.Component {
 		case "ripper":
 			m.ripperStatus = msg.Status
+			styledStatus = ripperStyle.Render(fmt.Sprintf("[%s] %s", msg.Component, msg.Status))
 		case "encoder":
 			m.encoderStatus = msg.Status
+			styledStatus = encoderStyle.Render(fmt.Sprintf("[%s] %s", msg.Component, msg.Status))
 		case "tagger":
 			m.taggerStatus = msg.Status
+			styledStatus = taggerStyle.Render(fmt.Sprintf("[%s] %s", msg.Component, msg.Status))
+		default:
+			styledStatus = systemStyle.Render(fmt.Sprintf("[%s] %s", msg.Component, msg.Status))
 		}
-		m.logs = append(m.logs, fmt.Sprintf("[%s] %s", msg.Component, msg.Status))
-		if len(m.logs) > 10 {
+
+		m.logs = append(m.logs, styledStatus)
+		if len(m.logs) > 50 {
 			m.logs = m.logs[1:]
 		}
 
@@ -98,8 +112,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i, r := range msg.Releases {
 			items[i] = mbItem{r}
 		}
-		m.mbList = list.New(items, list.NewDefaultDelegate(), 0, 0)
-		m.mbList.Title = "Select MusicBrainz Release"
+		m.mbList = list.New(items, list.NewDefaultDelegate(), m.width-10, m.height-15)
+		m.mbList.Title = fmt.Sprintf("Select Release for DiscID: %s", msg.MBID)
 
 	case tea.KeyMsg:
 		if m.selecting {
@@ -118,6 +132,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
+		case "p":
+			mode := ToggleParanoia()
+			m.paranoiaMode = GetParanoiaName()
+			m.logs = append(m.logs, systemStyle.Render(fmt.Sprintf("[system] Paranoia set to: %s", mode)))
+		case "X":
+			PurgeDirectories()
+			m.logs = append(m.logs, systemStyle.Render("[system] Working directories purged"))
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -127,36 +148,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	header := headerStyle.Render("BME: Batch Music Encoder")
+	header := headerStyle.Render("BME: Batch Music Encoder Dashboard")
 
-	statusCol := lipgloss.JoinVertical(lipgloss.Left,
-		statusStyle.Render(fmt.Sprintf("Ripper: %s", m.ripperStatus)),
-		statusStyle.Render(fmt.Sprintf("Encoder: %s", m.encoderStatus)),
-		statusStyle.Render(fmt.Sprintf("Tagger: %s", m.taggerStatus)),
-	)
+	ripperView := ripperStyle.Render("Ripper:   ") + m.ripperStatus
+	encoderView := encoderStyle.Render("Encoder:  ") + m.encoderStatus
+	taggerView := taggerStyle.Render("Tagger:   ") + m.taggerStatus
+	paranoiaView := systemStyle.Render("Paranoia: ") + m.paranoiaMode
 
-	logView := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		Width(40).
-		Height(10).
-		Render(strings.Join(m.logs, "\n"))
+	statusCol := statusStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
+		ripperView,
+		encoderView,
+		taggerView,
+		"\n"+paranoiaView,
+	))
+
+	// Take last N lines of logs that fit in height
+	logContent := strings.Join(m.logs, "\n")
+	logView := logStyle.
+		Width(m.width - 45).
+		Height(m.height - 10).
+		Render(logContent)
 
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, statusCol, logView)
 
 	if m.selecting {
-		m.mbList.SetSize(m.width-10, m.height-15)
 		return lipgloss.JoinVertical(lipgloss.Left,
 			header,
-			mainView,
 			"\n",
 			m.mbList.View(),
 		)
 	}
 
+	help := "\n[q] quit | [p] toggle paranoia | [X] purge work dirs"
+
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
+		"\n",
 		mainView,
-		"\nPress 'q' to quit",
+		help,
 	)
 }
 
@@ -166,6 +195,6 @@ type mbItem struct {
 
 func (i mbItem) Title() string { return i.release.Title }
 func (i mbItem) Description() string {
-	return fmt.Sprintf("ID: %s | Artist: %s", i.release.ReleaseID, i.release.AlbumArtist)
+	return fmt.Sprintf("Tracks: %d | ID: %s | Artist: %s", len(i.release.Tracks), i.release.ReleaseID, i.release.AlbumArtist)
 }
 func (i mbItem) FilterValue() string { return i.release.Title }

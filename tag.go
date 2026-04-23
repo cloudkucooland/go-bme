@@ -19,7 +19,6 @@ import (
 var selectionChan = make(chan mb_release)
 
 func tagger(ctx context.Context, p *tea.Program) {
-	slog.Debug("starting batch tagger")
 	if p != nil {
 		p.Send(StatusMsg{"tagger", "Starting"})
 	}
@@ -37,7 +36,6 @@ func tagger(ctx context.Context, p *tea.Program) {
 				}
 			}
 		case <-ctx.Done():
-			slog.Debug("shutdown: stopping batch tagger")
 			if p != nil {
 				p.Send(StatusMsg{"tagger", "Stopped"})
 			}
@@ -52,17 +50,22 @@ func tag_process_directories(p *tea.Program) error {
 		return fmt.Errorf("unable to read tag directory: %w", err)
 	}
 	if len(albums) == 0 {
-		// if p != nil { p.Send(StatusMsg{"tagger", "Waiting for encoded files"}) }
+		if p != nil {
+			p.Send(StatusMsg{"tagger", "Idle"})
+		}
 		return nil
 	}
 
 	for i := range albums {
 		mbid := albums[i].Name()
 		if p != nil {
-			p.Send(StatusMsg{"tagger", fmt.Sprintf("Tagging %s", mbid)})
+			p.Send(StatusMsg{"tagger", fmt.Sprintf("Tagging %s...", mbid)})
 		}
 		if err := tag_process_directory(mbid, p); err != nil {
 			slog.Error("failed to process directory", "mbid", mbid, "error", err)
+			if p != nil {
+				p.Send(StatusMsg{"tagger", fmt.Sprintf("Error [%s]: %v", mbid, err)})
+			}
 		}
 	}
 	return nil
@@ -76,7 +79,6 @@ func tag_process_directory(mbid string, p *tea.Program) error {
 	}
 
 	ripdata := load_ripdata(tagdir, mbid)
-
 	var mbdata mb_release
 
 	// Check if we already have a selection
@@ -86,12 +88,23 @@ func tag_process_directory(mbid string, p *tea.Program) error {
 	} else {
 		releases := mb_lookup_discid(mbid, int(ripdata.Trackcount))
 		if len(releases) == 0 {
-			slog.Warn("no MusicBrainz matches found", "mbid", mbid)
 			if p != nil {
-				p.Send(StatusMsg{"tagger", "No MB matches found"})
+				p.Send(StatusMsg{"tagger", "No MB matches, using CD-Text"})
 			}
-			// Fallback to basic ripdata? For now, just continue or skip.
-			return nil
+			// Fallback: Create mbdata from ripdata
+			mbdata = mb_release{
+				DiscID:      mbid,
+				AlbumArtist: ripdata.Performer,
+				Title:       ripdata.Title,
+				Tracks:      make([]mb_track, len(ripdata.Tracks)),
+			}
+			for i, rt := range ripdata.Tracks {
+				mbdata.Tracks[i] = mb_track{
+					Position: int(rt.ID),
+					Title:    rt.Title,
+					Artist:   rt.Performer,
+				}
+			}
 		} else if len(releases) == 1 {
 			mbdata = releases[0]
 		} else {
@@ -105,19 +118,24 @@ func tag_process_directory(mbid string, p *tea.Program) error {
 					if bytes, err := json.Marshal(mbdata); err == nil {
 						os.WriteFile(selectedPath, bytes, 0644)
 					}
-				case <-time.After(time.Minute * 5):
+				case <-time.After(time.Minute * 10):
 					return fmt.Errorf("timeout waiting for release selection for %s", mbid)
 				}
 			} else {
-				// non-interactive mode? pick first
 				mbdata = releases[0]
 			}
 		}
 	}
 
-	slog.Debug("mb_data", "data", mbdata)
-
 	// do work
+	processed := 0
+	total := 0
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".m4a") {
+			total++
+		}
+	}
+
 	for _, f := range files {
 		if !strings.HasSuffix(f.Name(), ".m4a") {
 			continue
@@ -125,10 +143,18 @@ func tag_process_directory(mbid string, p *tea.Program) error {
 
 		if err := tag_file(d, f.Name(), mbid, ripdata, mbdata); err != nil {
 			slog.Error("failed to tag file", "file", f.Name(), "error", err)
+		} else {
+			processed++
+			if p != nil {
+				p.Send(StatusMsg{"tagger", fmt.Sprintf("[%s] %d/%d", mbid, processed, total)})
+			}
 		}
 	}
 
 	// move to done directory
+	if p != nil {
+		p.Send(StatusMsg{"tagger", "Finishing..."})
+	}
 	t := filepath.Join(finaldir, mbid)
 	if err := os.Rename(d, t); err != nil {
 		return fmt.Errorf("failed to move to final directory: %w", err)

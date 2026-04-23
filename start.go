@@ -19,6 +19,38 @@ var encodedir string
 var tagdir string
 var finaldir string
 
+var paranoiaLevel paranoia_mode_t = PARANOIA_MODE_FULL ^ PARANOIA_MODE_NEVERSKIP
+
+func ToggleParanoia() string {
+	if paranoiaLevel == (PARANOIA_MODE_FULL ^ PARANOIA_MODE_NEVERSKIP) {
+		paranoiaLevel = PARANOIA_MODE_OVERLAP
+		return "Good Enough (Overlap)"
+	}
+	paranoiaLevel = PARANOIA_MODE_FULL ^ PARANOIA_MODE_NEVERSKIP
+	return "Full Paranoia"
+}
+
+func GetParanoiaName() string {
+	if paranoiaLevel == (PARANOIA_MODE_FULL ^ PARANOIA_MODE_NEVERSKIP) {
+		return "Full"
+	}
+	return "Fast"
+}
+
+func PurgeDirectories() error {
+	dirs := []string{ripdir, encodedir, tagdir}
+	for _, d := range dirs {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			os.RemoveAll(filepath.Join(d, entry.Name()))
+		}
+	}
+	return nil
+}
+
 func Debug(d bool) {
 	if d {
 		slog.Debug("enabling debug")

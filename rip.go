@@ -66,7 +66,6 @@ type riptrack_t struct {
 }
 
 func cdio(ctx context.Context, p *tea.Program) {
-	p.Send(StatusMsg{"ripper", "starting"})
 	if p != nil {
 		p.Send(StatusMsg{"ripper", "Starting"})
 	}
@@ -81,7 +80,6 @@ func cdio(ctx context.Context, p *tea.Program) {
 		case <-ticker.C:
 			cddevice := cdio_open(devicename, unsafe.Pointer(uintptr(0)))
 			if cddevice == nil {
-				// if p != nil { p.Send(StatusMsg{"ripper", "Waiting for device"}) }
 				continue
 			}
 
@@ -94,7 +92,6 @@ func cdio(ctx context.Context, p *tea.Program) {
 			}
 
 			state := mmc_test_unit_ready(cddevice, 3600)
-			p.Send(StatusMsg{"ripper", fmt.Sprintf("mmc_test_unit_ready: %d", state)})
 			if state == 0 {
 				if p != nil {
 					p.Send(StatusMsg{"ripper", "Disc detected"})
@@ -119,7 +116,6 @@ func cdio(ctx context.Context, p *tea.Program) {
 
 			cdio_destroy(cddevice)
 		case <-ctx.Done():
-			p.Send(StatusMsg{"ripper", "shutdown: stopping CD ripping"})
 			if p != nil {
 				p.Send(StatusMsg{"ripper", "Stopped"})
 			}
@@ -131,16 +127,21 @@ func cdio(ctx context.Context, p *tea.Program) {
 func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 	d := ripdisc_t{}
 
+	if p != nil {
+		p.Send(StatusMsg{"ripper", "Calculating DiscID..."})
+	}
 	d.MBdiscid = get_mbdiscid(cddevice)
 	if p != nil {
-		p.Send(StatusMsg{"ripper", fmt.Sprintf("Ripping %s", d.MBdiscid)})
+		p.Send(StatusMsg{"ripper", fmt.Sprintf("ID: %s", d.MBdiscid)})
 	}
 
 	mbid_safe := strings.ReplaceAll(d.MBdiscid, "/", "_")
 	fullpath := filepath.Join(ripdir, mbid_safe)
 	_, err := os.Stat(fullpath)
 	if err == nil {
-		p.Send(StatusMsg{"ripper", fmt.Sprintf("work directory already exists, skipping this CD", "path", fullpath)})
+		if p != nil {
+			p.Send(StatusMsg{"ripper", "Already ripped, skipping"})
+		}
 		mmc_eject_media(cddevice)
 		return nil
 	}
@@ -153,8 +154,10 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 	}
 
 	// get whatever data we can from the disc
+	if p != nil {
+		p.Send(StatusMsg{"ripper", "Reading CD-Text..."})
+	}
 	get_cdtext(&d, cddevice)
-	p.Send(StatusMsg{"ripper", fmt.Sprintf("disc: %s", d)})
 
 	// save to ripdata.json
 	ripdatapath := filepath.Join(fullpath, "ripdata.json")
@@ -196,10 +199,13 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 	}
 	defer cdio_paranoia_free(para)
 
-	cdio_paranoia_modeset(para, PARANOIA_MODE_FULL^PARANOIA_MODE_NEVERSKIP)
+	cdio_paranoia_modeset(para, paranoiaLevel)
 
-	for _, t := range d.Tracks {
+	for i, t := range d.Tracks {
 		if p != nil {
+			if i == 0 {
+				p.Send(StatusMsg{"ripper", "Initializing drive (this may take a moment)..."})
+			}
 			p.Send(StatusMsg{"ripper", fmt.Sprintf("Track %d/%d", t.ID, d.Trackcount)})
 		}
 		fs := cdio_cddap_track_firstsector(cdda, t.ID)
@@ -217,23 +223,11 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 
 		// modest gains if track 1 starts at sector 0, otherwise useless
 		buffer := bufio.NewWriterSize(rip, 1000*CDIO_CD_FRAMESIZE_RAW)
-		p.Send(StatusMsg{"ripper", fmt.Sprintf("track: %d first sector %d/%d", t.ID, fs, ls)})
-		p.Send(StatusMsg{"ripper", rippath})
-
 		write_wav_header(buffer, uint32(ls-fs)*uint32(CDIO_CD_FRAMESIZE_RAW))
 
 		cdio_paranoia_seek(para, fs, SEEK_SET)
-		if msg := cdio_cddap_messages(cdda); msg != "" {
-			p.Send(StatusMsg{"ripper", msg})
-		}
-		if merr := cdio_cddap_errors(cdda); merr != "" {
-			p.Send(StatusMsg{"ripper", merr})
-		}
-
-		for i := fs; i <= ls; i++ {
-			if debug && i%1000 == 0 {
-				p.Send(StatusMsg{"ripper", fmt.Sprintf("sector %d", i)})
-			}
+		
+		for j := fs; j <= ls; j++ {
 			bufptr := cdio_paranoia_read_limited(para, unsafe.Pointer(uintptr(0)), 20)
 			if bufptr != nil {
 				buffer.Write(bufptr[:])
@@ -246,12 +240,17 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 	cdio_cddap_close_no_free_cdio(cdda)
 
 	// move files from rip to encode dir
+	if p != nil {
+		p.Send(StatusMsg{"ripper", "Moving to encode queue..."})
+	}
 	if err := move_ripdir(&d, fullpath); err != nil {
-		p.Send(StatusMsg{"ripper", "moving files"})
 		return err
 	}
 
 	mmc_eject_media(cddevice)
+	if p != nil {
+		p.Send(StatusMsg{"ripper", "Complete. Ejecting."})
+	}
 	return nil
 }
 
