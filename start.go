@@ -21,7 +21,7 @@ var finaldir string
 
 func Debug(d bool) {
 	if d {
-		slog.Info("enabling debug")
+		slog.Debug("enabling debug")
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
 	debug = d
@@ -78,7 +78,7 @@ func Start(wd string, p *tea.Program) error {
 
 	select {
 	case sig := <-sigch:
-		slog.Info("shutdown requested by signal", "signal", sig)
+		slog.Debug("shutdown requested by signal", "signal", sig)
 		if p != nil {
 			p.Send(StatusMsg{"system", "Shutdown requested"})
 		}
@@ -86,8 +86,8 @@ func Start(wd string, p *tea.Program) error {
 	}
 
 	cancel()
-	slog.Info("waiting for background processes to finish")
+	slog.Debug("waiting for background processes to finish")
 	wg.Wait()
-	slog.Info("shutdown complete")
+	slog.Debug("shutdown complete")
 	return nil
 }

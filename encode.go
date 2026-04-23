@@ -30,7 +30,7 @@ type result struct {
 }
 
 func encoder(ctx context.Context, p *tea.Program) {
-	slog.Info("starting batch encoder")
+	p.Send(StatusMsg{"encoder", "starting batch encoder"})
 	if p != nil {
 		p.Send(StatusMsg{"encoder", "Starting"})
 	}
@@ -48,7 +48,7 @@ func encoder(ctx context.Context, p *tea.Program) {
 				}
 			}
 		case <-ctx.Done():
-			slog.Info("shutdown: stopping batch encoder")
+			p.Send(StatusMsg{"encoder", "stopping batch encoder"})
 			if p != nil {
 				p.Send(StatusMsg{"encoder", "Stopped"})
 			}
@@ -66,9 +66,7 @@ func process_directory(p *tea.Program) error {
 		return fmt.Errorf("unable to read encode directory: %w", err)
 	}
 	if len(albums) == 0 {
-		if p != nil {
-			p.Send(StatusMsg{"encoder", "Waiting for rips"})
-		}
+		// if p != nil { p.Send(StatusMsg{"encoder", "Waiting for rips"}) }
 		return nil
 	}
 
@@ -131,7 +129,7 @@ func process_directory(p *tea.Program) error {
 			slog.Error("job failed", "job id", r.id, "error", r.err)
 			encodeError = true
 		} else {
-			slog.Info("job done", "job id", r.id)
+			p.Send(StatusMsg{"encoder", fmt.Sprintf("job %d done", r.id)})
 		}
 	}
 
@@ -151,7 +149,7 @@ func worker(id int, jobs <-chan job, results chan<- result, wg *sync.WaitGroup) 
 	defer wg.Done()
 
 	for job := range jobs {
-		slog.Info("processing job", "worker", id, "job", job.id, "file", job.filename)
+		// p.Send(StatusMsg{"encoder", fmt.Sprintf("processing job %d %d %s", id, job.id, job.filename)})
 		alacname := strings.ReplaceAll(job.filename, ".wav", ".m4a")
 
 		trackarg := fmt.Sprintf("--track=%d/%d", job.track, job.tracks)

@@ -33,7 +33,7 @@ func mb_lookup_discid(mbid string, expectedTracks int) []mb_release {
 
 	metadata1 := mb5_query_query(query, "discid", mbid, "", 0, nil, nil)
 	if metadata1 == nil {
-		slog.Info("mb_lookup_discid", "msg", "no results")
+		slog.Debug("mb_lookup_discid", "msg", "no results")
 		return releases
 	}
 	metadata1 = mb5_metadata_clone(metadata1)
@@ -204,9 +204,9 @@ func mb_lookup_discid(mbid string, expectedTracks int) []mb_release {
 
 func mb_error_message(msg string, query mb5_query) {
 	result := mb5_query_get_lastresult(query)
-	slog.Info("mb_lookup_discid", "last query result", result)
+	slog.Debug("mb_lookup_discid", "last query result", result)
 
 	var errbuf [256]byte
 	mb5_query_get_lasterrormessage(query, &errbuf[0], 256)
-	slog.Info("mb_lookup_discid", "msg", msg, "err", strings.Trim(string(errbuf[:]), "\x00"))
+	slog.Debug("mb_lookup_discid", "msg", msg, "err", strings.Trim(string(errbuf[:]), "\x00"))
 }

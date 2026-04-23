@@ -19,7 +19,7 @@ import (
 var selectionChan = make(chan mb_release)
 
 func tagger(ctx context.Context, p *tea.Program) {
-	slog.Info("starting batch tagger")
+	slog.Debug("starting batch tagger")
 	if p != nil {
 		p.Send(StatusMsg{"tagger", "Starting"})
 	}
@@ -37,7 +37,7 @@ func tagger(ctx context.Context, p *tea.Program) {
 				}
 			}
 		case <-ctx.Done():
-			slog.Info("shutdown: stopping batch tagger")
+			slog.Debug("shutdown: stopping batch tagger")
 			if p != nil {
 				p.Send(StatusMsg{"tagger", "Stopped"})
 			}
@@ -52,9 +52,7 @@ func tag_process_directories(p *tea.Program) error {
 		return fmt.Errorf("unable to read tag directory: %w", err)
 	}
 	if len(albums) == 0 {
-		if p != nil {
-			p.Send(StatusMsg{"tagger", "Waiting for encoded files"})
-		}
+		// if p != nil { p.Send(StatusMsg{"tagger", "Waiting for encoded files"}) }
 		return nil
 	}
 
@@ -117,7 +115,7 @@ func tag_process_directory(mbid string, p *tea.Program) error {
 		}
 	}
 
-	slog.Info("mb_data", "data", mbdata)
+	slog.Debug("mb_data", "data", mbdata)
 
 	// do work
 	for _, f := range files {

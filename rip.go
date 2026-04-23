@@ -66,7 +66,7 @@ type riptrack_t struct {
 }
 
 func cdio(ctx context.Context, p *tea.Program) {
-	slog.Info("starting CD ripping")
+	p.Send(StatusMsg{"ripper", "starting"})
 	if p != nil {
 		p.Send(StatusMsg{"ripper", "Starting"})
 	}
@@ -81,9 +81,7 @@ func cdio(ctx context.Context, p *tea.Program) {
 		case <-ticker.C:
 			cddevice := cdio_open(devicename, unsafe.Pointer(uintptr(0)))
 			if cddevice == nil {
-				if p != nil {
-					p.Send(StatusMsg{"ripper", "Waiting for device"})
-				}
+				// if p != nil { p.Send(StatusMsg{"ripper", "Waiting for device"}) }
 				continue
 			}
 
@@ -96,7 +94,7 @@ func cdio(ctx context.Context, p *tea.Program) {
 			}
 
 			state := mmc_test_unit_ready(cddevice, 3600)
-			slog.Debug("mmc_test_unit_ready", "state", state)
+			p.Send(StatusMsg{"ripper", fmt.Sprintf("mmc_test_unit_ready: %d", state)})
 			if state == 0 {
 				if p != nil {
 					p.Send(StatusMsg{"ripper", "Disc detected"})
@@ -112,6 +110,7 @@ func cdio(ctx context.Context, p *tea.Program) {
 				case <-ticker.C:
 				default:
 				}
+				mmc_eject_media(cddevice)
 			} else {
 				if p != nil {
 					p.Send(StatusMsg{"ripper", "Checking tray..."})
@@ -120,7 +119,7 @@ func cdio(ctx context.Context, p *tea.Program) {
 
 			cdio_destroy(cddevice)
 		case <-ctx.Done():
-			slog.Info("shutdown: stopping CD ripping")
+			p.Send(StatusMsg{"ripper", "shutdown: stopping CD ripping"})
 			if p != nil {
 				p.Send(StatusMsg{"ripper", "Stopped"})
 			}
@@ -141,7 +140,7 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 	fullpath := filepath.Join(ripdir, mbid_safe)
 	_, err := os.Stat(fullpath)
 	if err == nil {
-		slog.Info("work directory already exists, skipping this CD", "path", fullpath)
+		p.Send(StatusMsg{"ripper", fmt.Sprintf("work directory already exists, skipping this CD", "path", fullpath)})
 		mmc_eject_media(cddevice)
 		return nil
 	}
@@ -155,7 +154,7 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 
 	// get whatever data we can from the disc
 	get_cdtext(&d, cddevice)
-	slog.Info("disc", "d", d)
+	p.Send(StatusMsg{"ripper", fmt.Sprintf("disc: %s", d)})
 
 	// save to ripdata.json
 	ripdatapath := filepath.Join(fullpath, "ripdata.json")
@@ -218,21 +217,22 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 
 		// modest gains if track 1 starts at sector 0, otherwise useless
 		buffer := bufio.NewWriterSize(rip, 1000*CDIO_CD_FRAMESIZE_RAW)
-		slog.Info("paranoia", "track", t.ID, "first sector", fs, "last sector", ls, "file", rippath)
+		p.Send(StatusMsg{"ripper", fmt.Sprintf("track: %d first sector %d/%d", t.ID, fs, ls)})
+		p.Send(StatusMsg{"ripper", rippath})
 
 		write_wav_header(buffer, uint32(ls-fs)*uint32(CDIO_CD_FRAMESIZE_RAW))
 
 		cdio_paranoia_seek(para, fs, SEEK_SET)
 		if msg := cdio_cddap_messages(cdda); msg != "" {
-			slog.Info("paranoia message", "msg", msg)
+			p.Send(StatusMsg{"ripper", msg})
 		}
 		if merr := cdio_cddap_errors(cdda); merr != "" {
-			slog.Error("paranoia error", "err", merr)
+			p.Send(StatusMsg{"ripper", merr})
 		}
 
 		for i := fs; i <= ls; i++ {
 			if debug && i%1000 == 0 {
-				slog.Debug("paranoia", "sector", i)
+				p.Send(StatusMsg{"ripper", fmt.Sprintf("sector %d", i)})
 			}
 			bufptr := cdio_paranoia_read_limited(para, unsafe.Pointer(uintptr(0)), 20)
 			if bufptr != nil {
@@ -247,6 +247,7 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 
 	// move files from rip to encode dir
 	if err := move_ripdir(&d, fullpath); err != nil {
+		p.Send(StatusMsg{"ripper", "moving files"})
 		return err
 	}
 
@@ -279,7 +280,7 @@ func get_mbdiscid(cddevice cddevice_t) string {
 	b = strings.ReplaceAll(b, "/", "_")
 	b = strings.ReplaceAll(b, "=", "-")
 
-	slog.Info("mb-discid", "b", b)
+	slog.Debug("mb-discid", "b", b)
 	return b
 }
 
@@ -367,7 +368,7 @@ func move_ripdir(d *ripdisc_t, rippath string) error {
 	mbid_safe := strings.ReplaceAll(d.MBdiscid, "/", "_")
 	encodepath := filepath.Join(encodedir, mbid_safe)
 	if _, err := os.Stat(encodepath); err == nil {
-		slog.Info("encode directory already exists, skipping move", "path", encodepath)
+		slog.Debug("encode directory already exists, skipping move", "path", encodepath)
 		return nil
 	}
 
