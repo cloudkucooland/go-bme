@@ -195,6 +195,6 @@ type mbItem struct {
 
 func (i mbItem) Title() string { return i.release.Title }
 func (i mbItem) Description() string {
-	return fmt.Sprintf("Tracks: %d | ID: %s | Artist: %s", len(i.release.Tracks), i.release.ReleaseID, i.release.AlbumArtist)
+	return fmt.Sprintf("Tracks: %d | Artist: %s | Title: %s | Country: %s | Barcode: %s | Disambig: %s", len(i.release.Tracks), i.release.AlbumArtist, i.release.Title, i.release.Country, i.release.Barcode, i.release.Disambiguation)
 }
 func (i mbItem) FilterValue() string { return i.release.Title }

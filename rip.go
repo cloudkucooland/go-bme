@@ -226,7 +226,7 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 		write_wav_header(buffer, uint32(ls-fs)*uint32(CDIO_CD_FRAMESIZE_RAW))
 
 		cdio_paranoia_seek(para, fs, SEEK_SET)
-		
+
 		for j := fs; j <= ls; j++ {
 			bufptr := cdio_paranoia_read_limited(para, unsafe.Pointer(uintptr(0)), 20)
 			if bufptr != nil {

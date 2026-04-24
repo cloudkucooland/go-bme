@@ -72,14 +72,17 @@ var mb5_query_lookup_discid func(mb5_query, mb5_discid) mb5_release_list
 var mb5_release_list_size func(mb5_release_list) int
 var mb5_release_list_item func(mb5_release_list, int) mb5_release
 var mb5_release_get_id func(mb5_release, unsafe.Pointer, int) // fetched mb5_release, fills []byte of size int
+var mb5_release_get_title func(mb5_release, unsafe.Pointer, int)
+var mb5_release_get_artistcredit func(mb5_release) mb5_artist_credit
+var mb5_release_get_country func(mb5_release, unsafe.Pointer, int)        // fetched mb5_release, fills []byte of size int
+var mb5_release_get_barcode func(mb5_release, unsafe.Pointer, int)        // fetched mb5_release, fills []byte of size int
+var mb5_release_get_disambiguation func(mb5_release, unsafe.Pointer, int) // fetched mb5_release, fills []byte of size int
 var mb5_query_query func(mb5_query, string, string, string, int, unsafe.Pointer, unsafe.Pointer) mb5_metadata
 var mb5_metadata_get_release func(mb5_metadata) mb5_release
 var mb5_query_get_lasterrormessage func(mb5_query, *byte, int) // fills []byte of size int
 var mb5_query_get_lastresult func(mb5_query) mb5_tQueryResult
 var mb5_metadata_get_disc func(mb5_metadata) mb5_disc
 var mb5_disc_get_releaselist func(mb5_disc) mb5_release_list
-var mb5_release_get_title func(mb5_release, unsafe.Pointer, int)
-var mb5_release_get_artistcredit func(mb5_release) mb5_artist_credit
 var mb5_metadata_delete func(mb5_metadata)
 var mb5_release_media_matching_discid func(mb5_release, string) mb5_media_list
 var mb5_medium_get_tracklist func(mb5_medium) mb5_track_list
@@ -192,6 +195,9 @@ func loadlibs() {
 	purego.RegisterLibFunc(&mb5_metadata_get_disc, libmusicbrainz5, "mb5_metadata_get_disc")
 	purego.RegisterLibFunc(&mb5_disc_get_releaselist, libmusicbrainz5, "mb5_disc_get_releaselist")
 	purego.RegisterLibFunc(&mb5_release_get_title, libmusicbrainz5, "mb5_release_get_title")
+	purego.RegisterLibFunc(&mb5_release_get_country, libmusicbrainz5, "mb5_release_get_country")
+	purego.RegisterLibFunc(&mb5_release_get_barcode, libmusicbrainz5, "mb5_release_get_barcode")
+	purego.RegisterLibFunc(&mb5_release_get_disambiguation, libmusicbrainz5, "mb5_release_get_disambiguation")
 	purego.RegisterLibFunc(&mb5_release_get_artistcredit, libmusicbrainz5, "mb5_release_get_artistcredit")
 	purego.RegisterLibFunc(&mb5_release_media_matching_discid, libmusicbrainz5, "mb5_release_media_matching_discid")
 	purego.RegisterLibFunc(&mb5_medium_get_tracklist, libmusicbrainz5, "mb5_medium_get_tracklist")

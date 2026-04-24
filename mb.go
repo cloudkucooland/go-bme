@@ -7,12 +7,15 @@ import (
 )
 
 type mb_release struct {
-	DiscID       string
-	ReleaseID    string
-	AlbumArtist  string
-	Title        string
-	DiscPosition int
-	Tracks       []mb_track
+	DiscID         string
+	ReleaseID      string
+	AlbumArtist    string
+	Title          string
+	DiscPosition   int
+	Tracks         []mb_track
+	Country        string
+	Barcode        string
+	Disambiguation string
 }
 
 type mb_track struct {
@@ -100,6 +103,23 @@ func mb_lookup_discid(mbid string, expectedTracks int) []mb_release {
 			mb_error_message("full release nil", query)
 			continue
 		}
+
+		if mbr.Title == "" {
+			mb5_release_get_title(fullrelease, unsafe.Pointer(&title[0]), 256)
+			mbr.Title = strings.Trim(string(title[:]), "\x00")
+		}
+
+		var country [10]byte
+		mb5_release_get_country(fullrelease, unsafe.Pointer(&country[0]), 10)
+		mbr.Country = strings.Trim(string(country[:]), "\x00")
+
+		var barcode [16]byte
+		mb5_release_get_barcode(fullrelease, unsafe.Pointer(&barcode[0]), 10)
+		mbr.Barcode = strings.Trim(string(barcode[:]), "\x00")
+
+		var disambiguation [256]byte
+		mb5_release_get_disambiguation(fullrelease, unsafe.Pointer(&disambiguation[0]), 10)
+		mbr.Disambiguation = strings.Trim(string(disambiguation[:]), "\x00")
 
 		medialist := mb5_release_media_matching_discid(fullrelease, mbid)
 		if medialist == nil {
