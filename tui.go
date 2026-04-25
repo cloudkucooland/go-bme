@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -13,6 +14,11 @@ import (
 type StatusMsg struct {
 	Component string
 	Status    string
+}
+
+type ProgressMsg struct {
+	Component string
+	Percent   float64
 }
 
 type MBMatchesMsg struct {
@@ -35,7 +41,7 @@ var (
 	statusStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			Padding(0, 1).
-			Width(40)
+			Width(44)
 
 	ripperStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00"))
 	encoderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF"))
@@ -53,6 +59,10 @@ type model struct {
 	taggerStatus  string
 	paranoiaMode  string
 
+	ripperProgress  progress.Model
+	encoderProgress progress.Model
+	taggerProgress  progress.Model
+
 	mbMatches []mb_release
 	mbList    list.Model
 	selecting bool
@@ -64,11 +74,14 @@ type model struct {
 
 func NewModel() model {
 	return model{
-		ripperStatus:  "Idle",
-		encoderStatus: "Idle",
-		taggerStatus:  "Idle",
-		paranoiaMode:  GetParanoiaName(),
-		logs:          make([]string, 0),
+		ripperStatus:    "Idle",
+		encoderStatus:   "Idle",
+		taggerStatus:    "Idle",
+		paranoiaMode:    GetParanoiaName(),
+		ripperProgress:  progress.New(progress.WithDefaultGradient()),
+		encoderProgress: progress.New(progress.WithDefaultGradient()),
+		taggerProgress:  progress.New(progress.WithDefaultGradient()),
+		logs:            make([]string, 0),
 	}
 }
 
@@ -78,11 +91,15 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.ripperProgress.Width = 40
+		m.encoderProgress.Width = 40
+		m.taggerProgress.Width = 40
 
 	case StatusMsg:
 		var styledStatus string
@@ -104,6 +121,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.logs) > 50 {
 			m.logs = m.logs[1:]
 		}
+
+	case ProgressMsg:
+		switch msg.Component {
+		case "ripper":
+			cmds = append(cmds, m.ripperProgress.SetPercent(msg.Percent))
+		case "encoder":
+			cmds = append(cmds, m.encoderProgress.SetPercent(msg.Percent))
+		case "tagger":
+			cmds = append(cmds, m.taggerProgress.SetPercent(msg.Percent))
+		}
+
+	case progress.FrameMsg:
+		newRipper, ripperCmd := m.ripperProgress.Update(msg)
+		m.ripperProgress = newRipper.(progress.Model)
+		cmds = append(cmds, ripperCmd)
+
+		newEncoder, encoderCmd := m.encoderProgress.Update(msg)
+		m.encoderProgress = newEncoder.(progress.Model)
+		cmds = append(cmds, encoderCmd)
+
+		newTagger, taggerCmd := m.taggerProgress.Update(msg)
+		m.taggerProgress = newTagger.(progress.Model)
+		cmds = append(cmds, taggerCmd)
 
 	case MBMatchesMsg:
 		m.mbMatches = msg.Releases
@@ -144,7 +184,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	return m, nil
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) View() string {
@@ -157,15 +197,18 @@ func (m model) View() string {
 
 	statusCol := statusStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
 		ripperView,
+		m.ripperProgress.View(),
 		encoderView,
+		m.encoderProgress.View(),
 		taggerView,
+		m.taggerProgress.View(),
 		"\n"+paranoiaView,
 	))
 
 	// Take last N lines of logs that fit in height
 	logContent := strings.Join(m.logs, "\n")
 	logView := logStyle.
-		Width(m.width - 45).
+		Width(m.width - 49).
 		Height(m.height - 10).
 		Render(logContent)
 

@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -59,7 +57,7 @@ func Debug(d bool) {
 	debug = d
 }
 
-func Start(wd string, p *tea.Program) error {
+func Start(ctx context.Context, wd string, p *tea.Program) error {
 	ripdir = filepath.Join(wd, "rip")
 	encodedir = filepath.Join(wd, "encode")
 	tagdir = filepath.Join(wd, "tag")
@@ -79,8 +77,6 @@ func Start(wd string, p *tea.Program) error {
 	}
 
 	loadlibs()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	var wg sync.WaitGroup
 
@@ -105,19 +101,11 @@ func Start(wd string, p *tea.Program) error {
 		tagger(ctx, p)
 	}()
 
-	sigch := make(chan os.Signal, 1)
-	signal.Notify(sigch, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP, os.Interrupt)
-
-	select {
-	case sig := <-sigch:
-		slog.Debug("shutdown requested by signal", "signal", sig)
-		if p != nil {
-			p.Send(StatusMsg{"system", "Shutdown requested"})
-		}
-	case <-ctx.Done():
+	<-ctx.Done()
+	if p != nil {
+		p.Send(StatusMsg{"system", "Shutdown requested"})
 	}
 
-	cancel()
 	slog.Debug("waiting for background processes to finish")
 	wg.Wait()
 	slog.Debug("shutdown complete")

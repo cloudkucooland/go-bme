@@ -96,7 +96,7 @@ func cdio(ctx context.Context, p *tea.Program) {
 				if p != nil {
 					p.Send(StatusMsg{"ripper", "Disc detected"})
 				}
-				if err := ripdisc(cddevice, p); err != nil {
+				if err := ripdisc(ctx, cddevice, p); err != nil {
 					slog.Error("ripping failed", "error", err)
 					if p != nil {
 						p.Send(StatusMsg{"ripper", fmt.Sprintf("Error: %v", err)})
@@ -124,10 +124,11 @@ func cdio(ctx context.Context, p *tea.Program) {
 	}
 }
 
-func ripdisc(cddevice cddevice_t, p *tea.Program) error {
+func ripdisc(ctx context.Context, cddevice cddevice_t, p *tea.Program) error {
 	d := ripdisc_t{}
 
 	if p != nil {
+		p.Send(ProgressMsg{"ripper", 0.0})
 		p.Send(StatusMsg{"ripper", "Calculating DiscID..."})
 	}
 	d.MBdiscid = get_mbdiscid(cddevice)
@@ -202,6 +203,14 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 	cdio_paranoia_modeset(para, paranoiaLevel)
 
 	for i, t := range d.Tracks {
+		select {
+		case <-ctx.Done():
+			cdio_cddap_close_no_free_cdio(cdda)
+			os.RemoveAll(fullpath)
+			return ctx.Err()
+		default:
+		}
+
 		if p != nil {
 			if i == 0 {
 				p.Send(StatusMsg{"ripper", "Initializing drive (this may take a moment)..."})
@@ -228,10 +237,27 @@ func ripdisc(cddevice cddevice_t, p *tea.Program) error {
 		cdio_paranoia_seek(para, fs, SEEK_SET)
 
 		for j := fs; j <= ls; j++ {
+			select {
+			case <-ctx.Done():
+				buffer.Flush()
+				rip.Close()
+				cdio_cddap_close_no_free_cdio(cdda)
+				os.RemoveAll(fullpath)
+				return ctx.Err()
+			default:
+			}
+
 			bufptr := cdio_paranoia_read_limited(para, unsafe.Pointer(uintptr(0)), 20)
 			if bufptr != nil {
 				buffer.Write(bufptr[:])
 			}
+
+			if p != nil && j%50 == 0 {
+				p.Send(ProgressMsg{"ripper", float64(j-fs) / float64(ls-fs)})
+			}
+		}
+		if p != nil {
+			p.Send(ProgressMsg{"ripper", 1.0})
 		}
 		buffer.Flush()
 		rip.Close()

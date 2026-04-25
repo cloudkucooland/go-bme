@@ -40,7 +40,7 @@ func encoder(ctx context.Context, p *tea.Program) {
 	for {
 		select {
 		case <-ticker.C:
-			if err := process_directory(p); err != nil {
+			if err := process_directory(ctx, p); err != nil {
 				slog.Error("encoder failed", "error", err)
 				if p != nil {
 					p.Send(StatusMsg{"encoder", fmt.Sprintf("Error: %v", err)})
@@ -55,7 +55,7 @@ func encoder(ctx context.Context, p *tea.Program) {
 	}
 }
 
-func process_directory(p *tea.Program) error {
+func process_directory(ctx context.Context, p *tea.Program) error {
 	joblimit := runtime.NumCPU()
 
 	// get all rips waiting to be encoded
@@ -73,7 +73,15 @@ func process_directory(p *tea.Program) error {
 	// uses the first directory alphabetically, by MB_discid
 	mbid := albums[0].Name()
 	d := filepath.Join(encodedir, mbid)
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	if p != nil {
+		p.Send(ProgressMsg{"encoder", 0.0})
 		p.Send(StatusMsg{"encoder", fmt.Sprintf("Encoding %s...", mbid)})
 	}
 
@@ -97,7 +105,7 @@ func process_directory(p *tea.Program) error {
 	// start workers
 	for i := 1; i <= joblimit; i++ {
 		wg.Add(1)
-		go worker(i, jobs, results, &wg, p)
+		go worker(ctx, i, jobs, results, &wg, p)
 	}
 
 	// pass all the jobs into the queue as quickly as it can
@@ -112,7 +120,13 @@ func process_directory(p *tea.Program) error {
 			continue
 		}
 
-		jobs <- job{id: i, filename: filepath.Join(d, file.Name()), ripdata: rd, track: track_t(tracknum), tracks: track_t(tracks)}
+		select {
+		case jobs <- job{id: i, filename: filepath.Join(d, file.Name()), ripdata: rd, track: track_t(tracknum), tracks: track_t(tracks)}:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return ctx.Err()
+		}
 	}
 	close(jobs)
 
@@ -125,17 +139,27 @@ func process_directory(p *tea.Program) error {
 	// read the results as each job finishes
 	var encodeError bool
 	completed := 0
-	for r := range results {
-		if r.err != nil {
-			slog.Error("job failed", "job id", r.id, "error", r.err)
-			encodeError = true
-		} else {
-			completed++
-			if p != nil {
-				p.Send(StatusMsg{"encoder", fmt.Sprintf("[%s] %d/%d", mbid, completed, tracks)})
+	for {
+		select {
+		case r, ok := <-results:
+			if !ok {
+				goto endresults
 			}
+			if r.err != nil {
+				slog.Error("job failed", "job id", r.id, "error", r.err)
+				encodeError = true
+			} else {
+				completed++
+				if p != nil {
+					p.Send(StatusMsg{"encoder", fmt.Sprintf("[%s] %d/%d", mbid, completed, tracks)})
+					p.Send(ProgressMsg{"encoder", float64(completed) / float64(tracks)})
+				}
+			}
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
+endresults:
 
 	if encodeError {
 		return fmt.Errorf("one or more encoding jobs failed for %s", mbid)
@@ -152,46 +176,58 @@ func process_directory(p *tea.Program) error {
 	return nil
 }
 
-func worker(id int, jobs <-chan job, results chan<- result, wg *sync.WaitGroup, p *tea.Program) {
+func worker(ctx context.Context, id int, jobs <-chan job, results chan<- result, wg *sync.WaitGroup, p *tea.Program) {
 	defer wg.Done()
 
-	for job := range jobs {
-		alacname := strings.ReplaceAll(job.filename, ".wav", ".m4a")
+	for {
+		select {
+		case job, ok := <-jobs:
+			if !ok {
+				return
+			}
+			alacname := strings.ReplaceAll(job.filename, ".wav", ".m4a")
 
-		trackarg := fmt.Sprintf("--track=%d/%d", job.track, job.tracks)
-		args := []string{"-q", trackarg}
+			trackarg := fmt.Sprintf("--track=%d/%d", job.track, job.tracks)
+			args := []string{"-q", trackarg}
 
-		if job.ripdata.Title != "" {
-			args = append(args, fmt.Sprintf("--album=%s", job.ripdata.Title))
-		}
+			if job.ripdata.Title != "" {
+				args = append(args, fmt.Sprintf("--album=%s", job.ripdata.Title))
+			}
 
-		if job.ripdata.Performer != "" {
-			args = append(args, fmt.Sprintf("--albumArtist=%s", job.ripdata.Performer))
-		}
+			if job.ripdata.Performer != "" {
+				args = append(args, fmt.Sprintf("--albumArtist=%s", job.ripdata.Performer))
+			}
 
-		for _, trackdata := range job.ripdata.Tracks {
-			if trackdata.ID == job.track {
-				if trackdata.Performer != "" {
-					args = append(args, fmt.Sprintf("--artist=%s", trackdata.Performer))
-				}
-				if trackdata.Title != "" {
-					args = append(args, fmt.Sprintf("--title=%s", trackdata.Title))
+			for _, trackdata := range job.ripdata.Tracks {
+				if trackdata.ID == job.track {
+					if trackdata.Performer != "" {
+						args = append(args, fmt.Sprintf("--artist=%s", trackdata.Performer))
+					}
+					if trackdata.Title != "" {
+						args = append(args, fmt.Sprintf("--title=%s", trackdata.Title))
+					}
 				}
 			}
-		}
 
-		args = append(args, job.filename, alacname)
-		slog.Debug("alacenc args", "args", args)
+			args = append(args, job.filename, alacname)
+			slog.Debug("alacenc args", "args", args)
 
-		cmd := exec.Command("/usr/local/bin/alacenc", args...)
-		if err := cmd.Run(); err != nil {
-			slog.Error("alacenc failed", "error", err, "file", job.filename)
-			results <- result{id: job.id, err: err}
-			continue
+			cmd := exec.CommandContext(ctx, "/usr/local/bin/alacenc", args...)
+			if err := cmd.Run(); err != nil {
+				slog.Error("alacenc failed", "error", err, "file", job.filename)
+				// Clean up partial file if canceled
+				if ctx.Err() != nil {
+					os.Remove(alacname)
+				}
+				results <- result{id: job.id, err: err}
+				continue
+			}
+			if err := os.Remove(job.filename); err != nil {
+				slog.Error("failed to remove wav file", "error", err, "file", job.filename)
+			}
+			results <- result{id: job.id, err: nil}
+		case <-ctx.Done():
+			return
 		}
-		if err := os.Remove(job.filename); err != nil {
-			slog.Error("failed to remove wav file", "error", err, "file", job.filename)
-		}
-		results <- result{id: job.id, err: nil}
 	}
 }

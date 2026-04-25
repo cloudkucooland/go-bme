@@ -29,7 +29,7 @@ func tagger(ctx context.Context, p *tea.Program) {
 	for {
 		select {
 		case <-ticker.C:
-			if err := tag_process_directories(p); err != nil {
+			if err := tag_process_directories(ctx, p); err != nil {
 				slog.Error("tagger failed", "error", err)
 				if p != nil {
 					p.Send(StatusMsg{"tagger", fmt.Sprintf("Error: %v", err)})
@@ -44,7 +44,7 @@ func tagger(ctx context.Context, p *tea.Program) {
 	}
 }
 
-func tag_process_directories(p *tea.Program) error {
+func tag_process_directories(ctx context.Context, p *tea.Program) error {
 	albums, err := os.ReadDir(tagdir)
 	if err != nil {
 		return fmt.Errorf("unable to read tag directory: %w", err)
@@ -57,11 +57,18 @@ func tag_process_directories(p *tea.Program) error {
 	}
 
 	for i := range albums {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		mbid := albums[i].Name()
 		if p != nil {
+			p.Send(ProgressMsg{"tagger", 0.0})
 			p.Send(StatusMsg{"tagger", fmt.Sprintf("Tagging %s...", mbid)})
 		}
-		if err := tag_process_directory(mbid, p); err != nil {
+		if err := tag_process_directory(ctx, mbid, p); err != nil {
 			slog.Error("failed to process directory", "mbid", mbid, "error", err)
 			if p != nil {
 				p.Send(StatusMsg{"tagger", fmt.Sprintf("Error [%s]: %v", mbid, err)})
@@ -71,7 +78,7 @@ func tag_process_directories(p *tea.Program) error {
 	return nil
 }
 
-func tag_process_directory(mbid string, p *tea.Program) error {
+func tag_process_directory(ctx context.Context, mbid string, p *tea.Program) error {
 	d := filepath.Join(tagdir, mbid)
 	files, err := os.ReadDir(d)
 	if err != nil {
@@ -118,6 +125,8 @@ func tag_process_directory(mbid string, p *tea.Program) error {
 					if bytes, err := json.Marshal(mbdata); err == nil {
 						os.WriteFile(selectedPath, bytes, 0644)
 					}
+				case <-ctx.Done():
+					return ctx.Err()
 				case <-time.After(time.Minute * 10):
 					return fmt.Errorf("timeout waiting for release selection for %s", mbid)
 				}
@@ -137,6 +146,12 @@ func tag_process_directory(mbid string, p *tea.Program) error {
 	}
 
 	for _, f := range files {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if !strings.HasSuffix(f.Name(), ".m4a") {
 			continue
 		}
@@ -147,6 +162,7 @@ func tag_process_directory(mbid string, p *tea.Program) error {
 			processed++
 			if p != nil {
 				p.Send(StatusMsg{"tagger", fmt.Sprintf("[%s] %d/%d", mbid, processed, total)})
+				p.Send(ProgressMsg{"tagger", float64(processed) / float64(total)})
 			}
 		}
 	}
