@@ -197,21 +197,42 @@ func (m model) View() string {
 	taggerView := taggerStyle.Render("Tagger:   ") + m.taggerStatus
 	paranoiaView := systemStyle.Render("Paranoia: ") + m.paranoiaMode
 
-	statusCol := statusStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
-		ripperView,
-		m.ripperProgress.View(),
-		encoderView,
-		m.encoderProgress.View(),
-		taggerView,
-		m.taggerProgress.View(),
-		"\n"+paranoiaView,
-	))
+	// Calculate heights
+	mainHeight := m.height - 6
+	if mainHeight < 10 {
+		mainHeight = 10
+	}
+	if mainHeight > 20 {
+		mainHeight = 20
+	}
+
+	statusCol := statusStyle.
+		Height(mainHeight).
+		Render(lipgloss.JoinVertical(lipgloss.Left,
+			ripperView,
+			m.ripperProgress.View(),
+			encoderView,
+			m.encoderProgress.View(),
+			taggerView,
+			m.taggerProgress.View(),
+			"\n"+paranoiaView,
+		))
 
 	// Take last N lines of logs that fit in height
-	logContent := strings.Join(m.logs, "\n")
+	availableLogLines := mainHeight - 2
+	if availableLogLines < 1 {
+		availableLogLines = 1
+	}
+
+	displayLogs := m.logs
+	if len(displayLogs) > availableLogLines {
+		displayLogs = displayLogs[len(displayLogs)-availableLogLines:]
+	}
+	logContent := strings.Join(displayLogs, "\n")
+
 	logView := logStyle.
 		Width(m.width - 49).
-		Height(m.height - 10).
+		Height(mainHeight).
 		Render(logContent)
 
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, statusCol, logView)
