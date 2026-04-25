@@ -176,6 +176,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			mode := ToggleParanoia()
 			m.paranoiaMode = GetParanoiaName()
 			m.logs = append(m.logs, systemStyle.Render(fmt.Sprintf("[system] Paranoia set to: %s", mode)))
+		case "ctrl+l":
+			return m, tea.ClearScreen
 		case "X":
 			PurgeDirectories()
 			m.logs = append(m.logs, systemStyle.Render("[system] Working directories purged"))
@@ -222,7 +224,7 @@ func (m model) View() string {
 		)
 	}
 
-	help := "\n[q] quit | [p] toggle paranoia | [X] purge work dirs"
+	help := "\n[q] quit | [p] toggle paranoia | [ctrl+l] redraw | [X] purge work dirs"
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
