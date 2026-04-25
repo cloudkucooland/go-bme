@@ -57,11 +57,14 @@ func Debug(d bool) {
 	debug = d
 }
 
-func Start(ctx context.Context, wd string, p *tea.Program) error {
-	ripdir = filepath.Join(wd, "rip")
-	encodedir = filepath.Join(wd, "encode")
-	tagdir = filepath.Join(wd, "tag")
-	finaldir = filepath.Join(wd, "done")
+var AppConfig *Config
+
+func Start(ctx context.Context, cfg *Config, p *tea.Program) error {
+	AppConfig = cfg
+	ripdir = cfg.RipDir
+	encodedir = cfg.EncodeDir
+	tagdir = cfg.TagDir
+	finaldir = cfg.DoneDir
 
 	if err := os.MkdirAll(ripdir, 0755); err != nil {
 		return fmt.Errorf("failed to create rip directory %s: %w", ripdir, err)
@@ -80,12 +83,22 @@ func Start(ctx context.Context, wd string, p *tea.Program) error {
 
 	var wg sync.WaitGroup
 
-	// start batch ripper
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		cdio(ctx, p)
-	}()
+	// start batch ripper(s)
+	devices := cfg.Devices
+	if len(devices) == 0 {
+		devices = []string{cdio_get_default_device(nil)}
+	}
+
+	for _, dev := range devices {
+		if dev == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(d string) {
+			defer wg.Done()
+			cdio(ctx, d, p)
+		}(dev)
+	}
 
 	// start batch encoder
 	wg.Add(1)

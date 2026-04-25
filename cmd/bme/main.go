@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,8 +26,17 @@ func main() {
 			&cli.StringFlag{
 				Name:    "dir",
 				Aliases: []string{"d"},
-				Value:   "/home/data/bme",
-				Usage:   "directory for work files",
+				Usage:   "base directory for work files",
+			},
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Usage:   "path to JSON config file",
+			},
+			&cli.StringFlag{
+				Name:    "encoder",
+				Aliases: []string{"e"},
+				Usage:   "path to alacenc binary",
 			},
 			&cli.BoolFlag{
 				Name:    "debug",
@@ -36,7 +46,30 @@ func main() {
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			bme.Debug(cmd.Bool("debug"))
-			dir := cmd.String("dir")
+
+			cfgPath := cmd.String("config")
+			if cfgPath == "" {
+				home, _ := os.UserHomeDir()
+				cfgPath = filepath.Join(home, ".bme.json")
+			}
+
+			cfg, err := bme.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+
+			// CLI Overrides
+			if d := cmd.String("dir"); d != "" {
+				cfg.BaseDir = d
+				// Recalculate subdirs if BaseDir is overridden
+				cfg.RipDir = filepath.Join(d, "rip")
+				cfg.EncodeDir = filepath.Join(d, "encode")
+				cfg.TagDir = filepath.Join(d, "tag")
+				cfg.DoneDir = filepath.Join(d, "done")
+			}
+			if e := cmd.String("encoder"); e != "" {
+				cfg.EncoderPath = e
+			}
 
 			// Catch OS signals for graceful shutdown
 			ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
@@ -46,7 +79,7 @@ func main() {
 
 			// Start logic in a goroutine
 			go func() {
-				if err := bme.Start(ctx, dir, p); err != nil {
+				if err := bme.Start(ctx, cfg, p); err != nil {
 					p.Send(bme.StatusMsg{Component: "system", Status: err.Error()})
 				}
 				p.Quit()

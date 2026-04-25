@@ -212,7 +212,7 @@ func worker(ctx context.Context, id int, jobs <-chan job, results chan<- result,
 			args = append(args, job.filename, alacname)
 			slog.Debug("alacenc args", "args", args)
 
-			cmd := exec.CommandContext(ctx, "/usr/local/bin/alacenc", args...)
+			cmd := exec.CommandContext(ctx, AppConfig.EncoderPath, args...)
 			if err := cmd.Run(); err != nil {
 				slog.Error("alacenc failed", "error", err, "file", job.filename)
 				// Clean up partial file if canceled
