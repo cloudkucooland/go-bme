@@ -51,7 +51,7 @@ func tag_process_directories(p *tea.Program) error {
 	}
 	if len(albums) == 0 {
 		if p != nil {
-			p.Send(StatusMsg{"tagger", "Idle"})
+			// p.Send(StatusMsg{"tagger", "Idle"})
 		}
 		return nil
 	}

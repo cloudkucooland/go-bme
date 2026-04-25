@@ -65,7 +65,7 @@ func process_directory(p *tea.Program) error {
 	}
 	if len(albums) == 0 {
 		if p != nil {
-			p.Send(StatusMsg{"encoder", "Idle"})
+			// p.Send(StatusMsg{"encoder", "Idle"})
 		}
 		return nil
 	}
